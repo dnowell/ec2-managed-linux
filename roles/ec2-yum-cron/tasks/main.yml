@@ -1,0 +1,26 @@
+---
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Install yum-cron package
+    yum:
+      name: "yum-cron"
+      state: present
+
+  - name: Copy configuration files
+    copy:
+      src: "{{ item }}"
+      dest: "/etc/yum/{{ item }}"
+      mode: 0644
+    with_items:
+      - "yum-cron.conf"
+      - "yum-cron-hourly.conf"
+
+  - name: Start the yum-cron service
+    service:
+      name: "yum-cron"
+      state: started
+      enabled: yes
+
+  when: yum_cron_auto_update is defined and yum_cron_auto_update

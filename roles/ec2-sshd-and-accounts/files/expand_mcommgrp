@@ -1,0 +1,325 @@
+#!/usr/bin/perl -w
+# vim:nu expandtab:
+
+#-----------------------------------------------------------------------------
+# $Id: expand_mcommgrp,v 1.15 2014/04/29 19:42:44 scs Exp $
+#
+# NOTE: This tool is archived.  Please check out
+#       a copy if you are planning on modifying the main copy.
+#
+# Quick script expand mcommunity groups into user lists by doing
+# ldap queries. Radically cut down from ldgrp2accts version 1.11.
+#
+# Construction notes:
+#
+# This passes both 'perl -w' and 'use strict' silently.
+#
+# Tab stops are set at 8, shift width at 4.
+#
+# Repository: $Source: /share/sysadmin/Repository/RHEL-UM.src/usr/local/sysadmin/scripts/ldgrp2accts/RCS/expand_mcommgrp,v $
+#
+# $Log: expand_mcommgrp,v $
+# Revision 1.15  2014/04/29 19:42:44  scs
+# Looks like a working version.
+#
+
+#-----------------------------------------------------------------------------
+# Generic modules and their location(s)
+#-----------------------------------------------------------------------------
+
+use     strict;
+use     English;        # Strongly recommended for readability
+use     Carp;           # Creates very detailed and useful debug msgs
+use     diagnostics;    # output from perl -w becomes more verbose/useful
+use     Net::LDAP;      # We're going to query mcommunity directly
+
+use     Data::Dumper;   # Dump complex structures for debugging
+$Data::Dumper::Indent = 1;  # . . . but do it concisely
+
+#-----------------------------------------------------------------------------
+# Who the heck are we?  Used in many error messages, define early.
+#-----------------------------------------------------------------------------
+
+use     File::Basename;
+my      $TOOL = basename $0;
+
+# debug control
+#
+# The convention is to use a debug hash so we can turn debugging
+# on and off in a feature-based manner.
+
+my %dbg = (
+    options    => 0,    # Print what we've set the options to
+    ldgrp      => 0,    # Show ldap group entries
+    ldusr      => 0,    # Show ldap user entries
+    chkmember  => 0,    # Debug detecting members
+    debug      => 0,    # Debug debugging
+);
+
+my %orig_dbg = %dbg;
+
+if ( $dbg{debug} ) {
+    printf STDERR "Before processing options, internal debug values are:\n";
+    foreach my $key ( sort keys %dbg ) {
+        printf STDERR "%10.10s: %- 3s (%d)\n",
+            $key, $dbg{$key} ? "ON" : "OFF", $dbg{$key};
+    }
+}
+
+#-----------------------------------------------------------------------------
+# Option definitions. We use POSIX (bundling) and GNU extensions.
+#-----------------------------------------------------------------------------
+
+use Getopt::Long qw(:config bundling no_ignore_case auto_abbrev);
+
+# Keep these in sync with the usage and help subroutines, but bear in
+# mind that some options (like debug and sometimes verbose) may not
+# be advertised to the user.  See the usage/help subroutines for easy
+# and reliable ways to keep the printing of default values in sync with
+# their actual settings.
+
+# Declare all the variables set by the options
+
+my $verbose = 0;        # Duh
+my $help = 0;           # Print help message and exit
+my $usage = 0;          # Print usage message and exit
+my $version = 0;        # Print version message and exit
+my $dryrun = 0;         # Don't create accounts, just describe
+my $warning = 0;        # Give warnings about pre-existing accounts
+
+# Set the switches that need defaults.  Zero is off, anything else
+# is on.  If the usage message prints them, set a string now describing
+# their default value now.
+
+$verbose = 0;    my $verbose_dflt     = $verbose    ? "yes" : "no";
+$version = 0;    my $version_dflt     = $version    ? "yes" : "no";
+$warning = 0;    my $warning_dflt     = $warning    ? "yes" : "no";
+
+# Define all the switchs and variables they'll use
+
+my %options_hash = (
+    # Boiler plate options that print a message and exit
+    'h|help'        => \$help,
+    'u|usage'       => \$usage,
+    # Other boiler plate options
+    'V|version'     => \$version,
+    'verbose!'      => \$verbose,
+    'perlwarn!'     => \$WARNING,   # Turn on perl -w flag
+);
+
+# These funky lines define a variable named VERSION which we build from
+# the RCS/CVS revision number.
+
+my $VERSION = '$Revision: 1.15 $';
+$VERSION =~ s/^.+\s+(\S+)\s.*$/$1/g;
+my $mailto = 'its.systems.support.unix@umich.edu';
+
+# Do *not* actually parse the options until the usage statements
+# are built, below.
+
+# Usage and help messages, and basic setup for defining them.
+#
+# The help function prints a help message on STDERR and exits.  It takes
+# no parameters, and will complain if misused.
+#
+# The usage function will print an optional set of caller-supplied
+# messages, followed by a standard usage message.
+#
+# The standard usage and help messages include the name and version
+# number of the program being used.  Some defaults are indicated;
+# the messages should be defined before options are checked.
+
+# The usage function
+#
+# If you call this function with one or more strings of your
+# own, it assumes you're telling the user about a usage error.
+# Your strings will be printed to STDERR, along with the generic
+# usage statement. It will exit with a non-zero value.
+#
+# If you don't pass any strings, it assumes the user has actually
+# asked for a usage statement. Since that's not an error, the
+# standard usage message is printed to stdout and we exit zero.
+
+sub usage {
+    my  $retval = 0;
+    my  $msg =
+"Proper usage of $TOOL is
+
+    $TOOL [ switches ]  groupname [ groupname ... ]
+
+where 'groupname' is one or more MCommunity groups whose
+members should be printed.
+
+  -u   --usage        Print this usage message and exit
+  -h   --help         Print a help message and exit
+       --version      Print version number of this tool and exit
+
+  -V   --verbose      Be verbose (default: $verbose_dflt)
+
+Try '$TOOL -h' for other information.
+
+$TOOL version $VERSION - send comments to $mailto.
+";
+    if ( @_ ) {
+        $retval = 1;
+        print STDERR "$TOOL: ";
+        foreach ( @_ ) {
+            print STDERR $_, "\n";
+        }
+        print STDERR "\n";
+        print STDERR $msg;
+    } else {
+        print STDOUT $msg;
+        $retval = 0;
+    }
+    exit $retval;
+}
+
+sub help {
+    my  $arg_count = scalar( @_ );
+    carp "$TOOL internal error: help called with args" if ( $arg_count );
+
+    my  $msg =
+"As of this writing, private groups and non-groups silently are ignored.
+Thus if you specify a person, no output is generated for that person.
+
+$TOOL version $VERSION - send comments/bugs to $mailto.
+";
+
+    print STDERR $msg;
+    exit 0;
+}
+
+
+# ------------------------------------------------------------------------
+# Process the options, giving immediate help/usage if requested
+# ------------------------------------------------------------------------
+
+usage( "The above options are not valid." ) if ! GetOptions( %options_hash );
+
+usage if ( $usage );
+help if ( $help );
+if ( $verbose || $version ) {
+    print "$TOOL version $VERSION\n";
+    exit 0 if $version;
+}
+
+if ( $dbg{options} or $dbg{debug} ) {
+    printf STDERR "After processing, options are now:\n";
+    my $fmt = "%20.20s: %s\n";
+    printf STDERR $fmt, "Verbose", $verbose ? "yes" : "no";
+    printf STDERR $fmt, "Version", $version ? "yes" : "no";
+    printf STDERR $fmt, "Warning", $dryrun  ? "yes" : "no";
+}
+
+usage "You must supply at least one group." if ! scalar @ARGV;
+
+my @grouplist = @ARGV;
+my %users = ();     # We'll build the user list/info in here
+my %unique_users = ();
+my ( $ldap, $gmesg );
+
+# ------------------------------------------------------------------------
+# Subroutines and their related variables
+# ------------------------------------------------------------------------
+
+my $spacer = "";
+
+# Given a search string, find the ldap group and grab out all the
+# individuals in it.
+
+sub find_ldap_group( $ ) {
+    my ( $groupname ) = @_;
+    my $gdata;
+    my %members = ();
+    
+    # Look for the group requested
+
+    $gdata = $ldap->search( filter => "(&(cn=$groupname))") or
+        die ("Failed to find '$groupname' in Mcommunity");
+
+    print STDERR Data::Dumper->Dump( [\$gdata], ['*gdata'] ) if $dbg{ldgrp};
+
+    # Loop through all the ldap data looking for member definitions.
+    # Hmmm . . . what if we have groups of groups? Can that happen?
+
+    foreach my $entry ($gdata->entries) {
+        my $t = asn $entry;
+        foreach my $href ( @{${$t}{attributes}} ) {
+            next if ! exists $$href{type};      # Should this ever happen?
+            next if ( ( "member" ne $$href{type} ) &&
+                      ( "umichDirectMember" ne $$href{type} ) );
+            # This hash should have two members 
+            #    type => "type of the value"
+            #    vals => "the data"
+            if ( "member" eq $$href{type} ) {
+                print STDERR "Found members!\n" if $dbg{ldgrp};
+                foreach my $m ( @{$$href{vals}} ) {
+                    $members{$m}++;
+                }
+            } elsif ( "umichDirectMember" eq $$href{type} ) {
+                print STDERR "Found umichDirectMember!\n" if $dbg{ldgrp};
+                foreach my $m ( @{$$href{vals}} ) {
+                    $members{$m}++;
+                }
+            }
+        }
+        if ( $dbg{ldgrp} ) {
+            print STDERR "The unique members entries are:\n" if $dbg{ldgrp};
+            foreach my $m ( sort keys %members ) {
+                printf STDERR "  User: '%s' (%d refs)\n", $m, $members{$m};
+            }
+        }
+    }
+
+    # Examine all the members that are part of the group. If they
+    # are users, add them to the list of users to provision. If
+    # they are not users, complain.
+
+    foreach my $member ( keys %members ) {
+        printf STDERR "Checking member $member for type.\n" if $dbg{chkmember};
+        if ( $member =~ /(^|.+,)ou\=People,.*/ ) {
+            printf STDERR "Found person $member in $groupname.\n" if $dbg{chkmember};
+            if ( $member =~ /(^|.+,)uid\=([^,]+),.*/ ) {
+                $unique_users{$2}++;
+                print STDERR "Got match uniqname '$2' from '$member'\n" if $dbg{chkmember};
+            } else {
+                print STDERR "Failed getting uniqname from '$member'\n" if $dbg{chkmember};
+            }
+        } else {
+            printf "Non-user/nongroup member '$member' in $groupname.\n" if $dbg{chkmember};
+        }
+    }
+}
+
+
+
+# ------------------------------------------------------------------------
+# MAIN - everything is set, lets do real work.
+# ------------------------------------------------------------------------
+
+# Make an anonymous connection to the ldap server and
+# hold onto it - we'll be doing multiple searches.
+
+$ldap = Net::LDAP->new( 'ldap.umich.edu' ) or die "$@";
+$gmesg = $ldap->bind ;    # an anonymous bind
+
+# These group names are good to test with.
+#   blackops  ctops  physics
+
+#@grouplist = qw( blackops ); # Need to get these from the command line.
+
+foreach my $group ( @grouplist ) {
+    printf STDERR "Searching for group '%s'\n", $group if $dbg{ldgrp};
+    find_ldap_group( $group );
+}
+
+# List the people found, if any
+
+if ( "0" !~ scalar %unique_users ) {
+    printf "%s\n", join( " ", sort keys %unique_users );
+}
+
+# Be kind, clean up
+
+$ldap->unbind();

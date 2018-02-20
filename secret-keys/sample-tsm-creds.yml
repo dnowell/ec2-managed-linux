@@ -1,0 +1,6 @@
+---
+# ENCRYPT THIS WITH ANSIBLE VAULT
+# These credentials will not work.
+tsm_admin_user: "vdcaccount"
+tsm_admin_pw: "S3cr3TP%ssw0rd"
+

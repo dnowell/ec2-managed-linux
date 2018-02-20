@@ -1,0 +1,104 @@
+#!/bin/bash
+
+# Managed by Ansible
+
+set -o pipefail
+set -u
+
+# --------------------------------------------------------------------------- #
+#               VARIABLE DEFINITIONS
+# --------------------------------------------------------------------------- #
+
+if [ "x" != "${1:-x}" ] ; then
+        _cli_arg="${1}"
+else
+        _cli_arg=""
+fi
+
+readonly _cli_arg="${_cli_arg}"
+
+readonly _uri='http://169.254.169.254/latest/meta-data'
+
+readonly _attrs='
+                instance-id
+                instance-type
+                local-hostname
+                local-ipv4
+                public-hostname
+                public-ipv4
+                security-groups
+                '
+
+readonly _outd="$(mktemp -d)"
+
+# --------------------------------------------------------------------------- #
+#               FUNCTIONS
+# --------------------------------------------------------------------------- #
+
+errout() {
+        _msg="${0##*/} error: ${1}"
+        printf '%s\n' "${_msg}"
+        cleanup
+        exit 1
+}
+
+cleanup() {
+        rm -fr "${_outd}"
+}
+
+validate_cli_arg() {
+        local _suspect="${1}"
+        local _scrubbed="$(tr -dc '[a-z4]-' <<< ${_suspect})"
+
+        if [ "${_suspect}" != "${_scrubbed}" ] ; then
+                errout 'Bad characters in CLI argument'
+        fi
+}
+
+get_instance_info() {
+        local _path_arg="${1}"
+        local _rescode
+        local _line
+
+        curl                                                            \
+        -s                                                              \
+        -w '%{http_code}'                                               \
+        -o "${_outd}/${_path_arg}"                                      \
+        "${_uri}/${_path_arg}"                                          \
+        > "${_outd}/rescode"
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem retrieving EC2 instance data'
+        fi
+
+        read _rescode < "${_outd}/rescode"
+
+        if [ "${_rescode}" != "200" ] ; then
+                printf '%-17s %s\n' "${_path_arg}" 'null'
+                return
+        fi
+
+        # Some attributes return multi-value output,
+        # so we iterate to make sure all are displayed.
+
+        while IFS='' read -r _line || [ -n "${_line}" ] ; do
+                printf '%-17s %s\n' "${_path_arg}" "${_line}"
+        done < "${_outd}/${_path_arg}"
+}
+
+# --------------------------------------------------------------------------- #
+#               MAIN LOGIC
+# --------------------------------------------------------------------------- #
+
+if [ -z "${_cli_arg}" ] ; then
+        for _i in ${_attrs} ; do
+                get_instance_info "${_i}"
+        done
+else
+        validate_cli_arg "${_cli_arg}"
+        get_instance_info "${_cli_arg}"
+fi
+
+cleanup
+
+exit 0

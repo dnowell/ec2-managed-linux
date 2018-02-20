@@ -1,0 +1,145 @@
+---
+##### Authentication #####
+
+## Profiles should be configured in ~/.aws/credentials (https://docs.aws.amazon.com/cli/latest/userguide/cli-multiple-profiles.html)
+## 'saml' is the profile created by the aws-saml-api container (https://github.com/umich-iam/aws-saml-api)
+profile: 'saml'
+## Profile variables. Do not change, instead change the profile above 
+aws_region: '{{ lookup("ini", "region section={{ profile }} file=~/.aws/credentials") }}'
+aws_access_key: '{{ lookup("ini", "aws_access_key_id section={{ profile }} file=~/.aws/credentials") }}'
+aws_secret_key: '{{ lookup("ini", "aws_secret_access_key section={{ profile }} file=~/.aws/credentials") }}'
+aws_session_token: '{{ lookup("ini", "aws_session_token section={{ profile }} file=~/.aws/credentials default="" ") }}'
+
+##### Instance information #####
+
+## This ec2_keypair is something you create in your AWS console using the keypair menu (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html#having-ec2-create-your-key-pair)
+ec2_keypair_name: "my-keypair"
+## This is the private key you downloaded after creating the keypair.
+ansible_ssh_private_key_file: "~/ec2-managed-linux-template/secret-keys/ssh-keys/my-keypair.pem"
+## EC2 instance Type (https://aws.amazon.com/ec2/instance-types/)
+inst_type: "t2.micro"
+## VPC for Security Groups
+vpc_name: "vdc-ent-apps-example"
+## VPC subnet IDs for EC2 -- If VPN make sure to edit IP_TYPE lower in this file
+subnet_name: "VpnSubnetX"
+## Enable termination protection?
+termination_protection: "yes"
+## Create CloudWatch alarm to auto-recover this instance?
+auto_recover: false
+## IP_TYPE options: 
+## "vpn", "private", "public"
+## VPN & Private options will use the 10. address for Ansible connectivity.
+## Public will use the public AWS address.
+## Note that private should be used for the PrivateSubnet or VpcOnlySubnet networks
+## If you use either of those, make sure you are running this script from a server in AWS w/ network access
+## VPN is the only type that will get Splunk installed and have Nagios enabled
+## Other two will send logs to Syslog forwarder
+IP_TYPE: "vpn"
+## DO NOT CHANGE mos-linux.  You can add another entry below, they should be created in your Amazon account before deploying
+SECURITYGROUPS:
+  - mos-linux
+
+
+
+##### EC2 tags #####
+
+## Name should be unique and meaningful
+ec2_name: "Sample MOS Linux"
+## Use nonprod or prod - May be used for validation on proper subnets
+## This populates the Env tag
+prod_tag: "nonprod"
+## This means you want Systems Support to patch and possibly monitor your server
+managed_tag: "yes"
+## The supported options here are "24x7", "12x5", and "no"
+## Systems Support will use this to determine how to monitor your server
+monitor_tag: "no"
+## Free-form tag for your use
+role_tag: "useless"
+## This is the MCommunity group that will be tagged as Technical Contact
+## It also will be used to provision accounts if the user_accounts variable is set to yes
+## Group should be set to "Member list is viewable by ALL"
+TechnicalContact: "fake-mcomm-group"
+## Business Owner is a different MCommunity group used for billing and contact
+## We will not provision user access for this group
+BusinessOwner: "fake mcomm group2"
+## CostCode is a defined and managed value used to allocate cost of AWS resources to specific services or platforms
+## Examples include its_status_page, miserver, its_foundation_bastion, etc...
+costcode_tag: ""
+## Optional, intended for high level service, ie, CSPROD
+service_tag: ""
+## Snapshot tag - If set to an integer we will take daily snapshots and retain for that many days snapshot_tag: ""
+snapshot_tag: "0"
+
+## DNS - If you put a short host name in here, it will get added to .aws.vdc.it.umich.edu DNS
+## You can (and probably should) use a FQDN though.  If it's *.aws.vdc.it.umich.edu that will still get picked up
+## Please allow up to 15 minutes for the script to run and propagate
+## Note that this must be unique.  Duplicate values will fail
+## Hostname will also be set to this value if it exists
+dns_tag: ""
+
+
+
+##### Operating System  #####
+
+## Distribution of Linux - Current values are CENTOS and RHEL
+distro: "RHEL"
+## Control whether yum(8) updates are auto-installed
+yum_cron_auto_update: true
+
+
+### File Backups
+# Decide if you want TSM backup client installed and configured
+tsm: "no"
+# What time do you want the backup to run?
+# Available options are:
+# 5PM, 7PM, 9PM, 11PM
+tsm_time: "7PM"
+# Please encrypt the below file with ansible vault if using TSM
+tsm_location: "~/ec2-managed-linux-template/secret-keys/tsm-creds.yml"
+#### Do not change this information unless you are using a different TSM server and know what you are doing
+tsm_port: "1510"
+tsm_server: "vdc-tsm1.aws.vdc.it.umich.edu"
+
+
+
+##### Disk information #####
+
+## Size of initial disk 
+disk_size_gb: 20
+
+
+##### User Account Information #####
+
+## If user_accounts is set to yes, user accounts will be created for everyone that is a member of the mcomm_group specified above 
+user_accounts: "yes"
+## If the user_accounts tag is set to "yes" duo_location is required
+## We Recommend you encrypt the below file if used (please see Ansible Vault information)
+duo_location: "~/ec2-managed-linux-template/secret-keys/duo-creds.yml"
+## Local Unix group we will add users to.
+collab_group: "monkeys"
+collab_gid: 4242
+
+
+##### Miscellaneous #####
+## Only change this if you want this server to be a syslog server
+## Very unlikely, but useful if you will be running systems in the VpcOnly subnets
+f_is_loghost: "no"
+## Only change this if you have set up a different syslog server of your own
+## This is where logs are sent if you are not on the VPN
+loghost: "syslog.aws.vdc.it.umich.edu"
+remote_syslog_size: 50
+
+
+########## Do not change values below this line ##########
+ansible_user: "{{ 'centos' if distro == 'CENTOS' else 'ec2-user' }}"
+OS_VERSION: "{{ 'CentOS Linux 7' if distro == 'CENTOS' else 'RHEL-7*GA' }}"
+public_ami: "{{ 'no' if distro == 'RHEL' else 'yes' }}"
+ami_owner: "{{ '309956199498' if distro == 'RHEL' else 'aws-marketplace' }}"
+
+
+# Leave template here if Systems goes to OSSEC / Slack model
+# Probably put in the launch script though
+# OSSEC Slack alerts
+#ossec_slackuser: "ossecEc2"
+#ossec_webhook: "https://hooks.slack.com/services/xyz"
+

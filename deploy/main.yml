@@ -1,0 +1,5 @@
+---
+- hosts: tag_umos_linux:&tag_umenv_nonprod
+  become: yes
+  roles:
+    - { role: ec2-baseline, tags: [deploy] }

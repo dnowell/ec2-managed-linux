@@ -1,0 +1,13 @@
+_p=/usr/local/bin
+
+print_cmd() {
+        if [ -f "${_p}/${1}" ] && [ -x "${_p}/${1}" ] ; then
+                printf '$ %-10s | %s\n'                                 \
+                "${1}"                                                  \
+                "${2}"
+        fi
+}
+
+print_cmd 'aws-info' 'Print EC2 instance details'
+print_cmd 'aws-nametag' 'Print EC2 tag:Name'
+print_cmd 'aws-alltags' 'Print all EC2 instance tags'

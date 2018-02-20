@@ -1,0 +1,116 @@
+#!/bin/bash
+
+# --------------------------------------------------------------------------- #
+#                       VARIABLE DEFINITIONS
+# --------------------------------------------------------------------------- #
+
+PATH=/usr/bin:/bin
+
+# Jinja2-generated values
+
+readonly _upper_limit={{ swap_use_alert_pct }}
+readonly _slack_channel={{ slack_channel  }}
+readonly _slack_username={{ slack_username }}
+readonly _slack_uri={{ slack_uri }}
+
+# A suffixed (%w) alert lockfile ensures that we are alerted
+# about a swap usage - at most - once each day.
+
+readonly _alert_lockfile="/tmp/swapuse-alert.$(whoami).$(date +%w)"
+readonly _lockfiles=/tmp/swapuse-alert.*
+
+# --------------------------------------------------------------------------- #
+#                       FUNCTIONS
+# --------------------------------------------------------------------------- #
+
+errout() {
+        local _msg="${0##*/} error: ${1}"
+
+        logger -p local3.err "${_msg}"
+        exit 1
+}
+
+audit_installed_programs() {
+        local _i
+
+        for _i in gawk curl ; do
+                which "${_i}" >/dev/null 2>&1
+
+                if [ ${?} -ne 0 ] ; then
+                        errout "Missing program dependency (${_i})"
+                fi
+        done
+}
+
+audit_integer() {
+        grep -Eq '^[0-9]+$' <<<"${1}"
+                
+        if [ ${?} -ne 0 ] ; then
+                errout "Non-numeric data (${_i})"
+        fi
+}
+
+build_bc_calculation() {
+        local _swapused="${_swaptotal} - ${_swapfree}"
+        readonly _calc="scale=0; ((${_swapused}) * 100) / ${_swaptotal}"
+}
+
+calculate_swapused_pct() {
+        readonly _swapused_pct="$(bc <<<${_calc})"
+}
+
+send_alert() {
+        local _msg="${HOSTNAME%%.*} ${0##*/}: swap usage is ${1}%"
+        local _json="{\"channel\": \"${_slack_channel}\", \"username\":\"${_slack_username}\", \"attachments\":[{\"color\":\"danger\" , \"text\": \"${_msg}\"}]}"
+
+        curl -s -d "payload=${_json}" "${_slack_uri}"
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem posting message to Slack'
+        fi
+}
+
+# --------------------------------------------------------------------------- #
+#                       MAIN LOGIC
+# --------------------------------------------------------------------------- #
+
+audit_installed_programs
+
+# If a lockfile (matching the current day) exists, then we already
+# sent an alert. We can get out quietly.
+#
+# Else clean up the old alert lockfiles so that we start fresh when
+# new day/week begins.
+
+if [ -e "${_alert_lockfile}" ] ; then
+        exit 0
+else
+        # Do not quote $_lockfiles or it will break the glob
+        rm -f ${_lockfiles}
+fi
+
+# Capture total swap used and free swap. (Or, if total swap is 0,
+# just get out quietly).
+
+readonly _swaptotal="$(gawk '/SwapTotal/{ print $2 }' /proc/meminfo)"
+audit_integer "${_swaptotal}"
+
+if [ ${_swaptotal} -eq 0 ] ; then
+        exit 0
+fi
+
+readonly _swapfree="$(gawk '/SwapFree/{ print $2 }' /proc/meminfo)"
+audit_integer "${_swapfree}"
+
+# Calculate the current swap use and alert if it's above the limit.
+
+build_bc_calculation
+calculate_swapused_pct
+audit_integer "${_swapused_pct}"
+
+if [ ${_swapused_pct} -gt ${_upper_limit} ] ; then
+        send_alert "${_swapused_pct}"
+        touch "${_alert_lockfile}"
+fi
+
+exit 0

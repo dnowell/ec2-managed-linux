@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<zone>
+ <short>umich</short>
+ <description>This is everything but M-Guest.  Use Security Group for more granular rules, this is just a fallback in case someone makes a mistake at that level</description>
+{% for sub in um_campus_subnets %}
+       <source address="{{ sub }}"/>
+{% endfor %}
+  <service name="nrpe"/>
+  <service name="ssh"/>
+
+{% if f_is_loghost is defined and f_is_loghost == "yes" %}
+  <rule family="ipv4">
+    <source address="10.0.0.0/8"/>
+    <service name="rsyslog"/>
+    <accept/>
+  </rule>
+{% endif %}
+
+
+  <rule family="ipv4">
+    <source address="{{ hostvars['localhost'].sndata.subnets[0].cidr_block }}"/>
+    <accept/>
+  </rule>
+
+
+
+
+</zone>

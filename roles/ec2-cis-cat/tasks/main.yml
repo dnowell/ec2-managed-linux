@@ -1,0 +1,284 @@
+---
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Disable mount of certain filesystems (1.1.1)
+    copy:
+      src: "disable-fs.txt"
+      dest: "/etc/modprobe.d/CIS.conf"
+
+  - name: Set permissions on bootloader file (1.4.1)
+    file:
+      path: "/boot/grub2/grub.cfg"
+      mode: '600'
+      state: file
+
+  - name: Limit core dumps (1.5.1)
+    copy:
+      src: "coredump-limit.txt"
+      dest: "/etc/security/limits.d/80-coredumps.conf"
+
+  - name: Prevent suid core dumps (1.5.1)
+    copy:
+      src: "coredump-suid.txt"
+      dest: "/etc/sysctl.d/80-coredump-suid.conf"
+    notify:
+      - restart sysctl
+
+  - name: Harden NTP service (2.2.1.2)
+    copy:
+      src: "ntp.conf"
+      dest: "/etc/ntp.conf"
+    notify:
+      - restart ntp
+
+  - name: Prevent packet redirection (3.1.2)
+    copy:
+      src: "packet-redir.txt"
+      dest: "/etc/sysctl.d/80-packet-redir.conf"
+    notify:
+      - restart sysctl
+
+  - name: Prevent ICMP redirection (3.2.2)
+    copy:
+      src: "icmp-redir.txt"
+      dest: "/etc/sysctl.d/80-icmp-redir.conf"
+    notify:
+      - restart sysctl
+
+  - name: Prevent ICMP secure redirection (3.2.3)
+    copy:
+      src: "icmp-sec-redir.txt"
+      dest: "/etc/sysctl.d/80-icmp-sec-redir.conf"
+    notify:
+      - restart sysctl
+
+  - name: Log martian packets (3.2.4)
+    copy:
+      src: "log-martians.txt"
+      dest: "/etc/sysctl.d/80-log-martians.conf"
+    notify:
+      - restart sysctl
+
+  - name: Ignore ipv6 router adverts (3.3.1)
+    copy:
+      src: "ignore-ipv6-routeradv.txt"
+      dest: "/etc/sysctl.d/80-ignore-ipv6-routeradv.conf"
+    notify:
+      - restart sysctl
+
+  - name: Ignore ipv6 redirects (3.3.2)
+    copy:
+      src: "ignore-ipv6-redir.txt"
+      dest: "/etc/sysctl.d/80-ignore-ipv6-redir.conf"
+    notify:
+      - restart sysctl
+
+  - name: Configure TCP wrappers (3.4.[2-3])
+    copy:
+      src: "hosts.access.txt"
+      dest: "/etc/{{ item }}"
+    with_items:
+      - "hosts.allow"
+      - "hosts.deny"
+
+    # firewalld does not create rules in a way that CIS-CAT
+    # recognizes.
+  - name: Install firewalld (3.6.1)
+    yum:
+      name: "{{ item }}"
+      state: present
+    with_items:
+        - firewalld
+
+  - name: Configure host-level firewall (3.6.[2-5])
+    block:
+
+    - name: Install custom firewall zones
+      template:
+        src: "{{ item }}.j2"
+        dest: "/etc/firewalld/zones/{{ item }}"
+        mode: '644'
+      with_items:
+        - "umich.xml"
+
+    - name: Install public firewall zone to deny all traffic
+      copy:
+        src: "public.xml"
+        dest: "/etc/firewalld/zones/public.xml"
+
+    - name: Install NRPE firewall service
+      copy:
+        src: "nrpe.xml"
+        dest: "/etc/firewalld/services/nrpe.xml"
+
+    - name: Ensure firewalld service is active
+      service:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    # Handles both the loghost system and the client systems
+    # that are pushing messages to it; see template for logic
+    # on how the rsyslog service is configured.
+  - name: Install rsyslog main config (4.2.1.[3-4])
+    template:
+      src: "rsyslog.conf.j2"
+      dest: "/etc/rsyslog.conf"
+    notify:
+    - restart rsyslog
+
+    # Handles only the loghost system.
+  - name: Set up loghost
+    block:
+
+    - name: Create log-viewer group
+      group:
+        name: "logviewers"
+        state: present
+
+    - name: Create remote log mountpoint
+      file:
+        path: "/var/log/remote"
+        state: directory
+
+    - name: Install LVM
+      yum:
+        name: lvm2
+        state: present
+
+    - name: Create VG
+      lvg:
+        vg: uservg00
+        pvs: "/dev/xvdc"
+
+    - name: Create /var/log/remote LV
+      lvol:
+        vg: uservg00
+        lv: lvlogremote
+        size: 100%VG
+
+    - name: Create /var/log/remote filesystem
+      filesystem:
+        fstype: xfs
+        dev: /dev/uservg00/lvlogremote
+
+    - name: Mount /var/log/remote
+      mount:
+        fstype: xfs
+        path: /var/log/remote
+        src: /dev/uservg00/lvlogremote
+        state: mounted
+
+    - name: Manage remote log filesystem permissions
+      file:
+        path: "/var/log/remote"
+        mode: '750'
+        owner: root
+        group: logviewers
+        state: directory
+
+    - name: Restore selinux context for /var/log/remote
+      command: restorecon -R -v /var/log/remote
+
+    - name: Copy remote reception rsyslog config
+      copy:
+        src: "rsyslog.d-remote-recv.conf"
+        dest: "/etc/rsyslog.d/01-remote-recv.conf"
+      notify:
+      - restart rsyslog
+
+    - name: Copy remote reception logrotate config
+      copy:
+        src: "logrotate.d-remote-recv.conf"
+        dest: "/etc/logrotate.d/remote_recv"
+
+    - name: Create rsyslog service for UDP & TCP in firewalld
+      copy:
+        src: "rsyslog.xml"
+        dest: "/etc/firewalld/services/rsyslog.xml"
+
+    - name: Restart firewalld
+      command: systemctl restart firewalld.service
+
+    when:
+      - f_is_loghost == "yes"
+
+  - name: Set permissions on crontab (5.1.2])
+    file:
+      path: "/etc/crontab"
+      mode: '600'
+      state: file
+
+  - name: Set permissions on cron dirs (5.1.[3-7])
+    file:
+      path: "/etc/{{ item }}"
+      mode: '700'
+      state: directory
+    with_items:
+      - "cron.hourly"
+      - "cron.daily"
+      - "cron.weekly"
+      - "cron.monthly"
+      - "cron.d"
+
+  - name: Configure at/cron access (5.1.8)
+    block:
+
+      - name: Remove deny files
+        file:
+          path: "{{ item }}"
+          state: absent
+        with_items:
+          - "/etc/at.deny"
+          - "/etc/cron.deny"
+
+      - name: Copy allow files
+        copy:
+          src: "at-cron.allow.txt"
+          dest: "{{ item }}"
+          mode: '600'
+        with_items:
+          - "/etc/at.allow"
+          - "/etc/cron.allow"
+
+  - name: Set systemwide umask (5.4.4)
+    copy:
+      src: "profile.d-umask.txt"
+      dest: "/etc/profile.d/80-umask.sh"
+
+  - name: Require wheel group for su (5.6)
+    copy:
+      src: "pam.d-su.txt"
+      dest: "/etc/pam.d/su"
+
+  - name: Update PAM pwquality for local passwords
+    copy:
+      src: "pwquality.conf"
+      dest: "/etc/security/pwquality.conf"
+
+  - name: Set permissions on passwd- / group- (6.1.[6,8])
+    file:
+      path: "/etc/{{ item }}"
+      mode: '600'
+      state: file
+    with_items:
+      - "passwd-"
+      - "group-"
+
+  - name: Add root bin to match PATH setting (6.2.6)
+    file:
+      path: "/root/bin"
+      mode: '700'
+      state: directory
+
+  - name: Log file permissions
+    command: "find /var/log -type f -exec chmod g-wx,o-rwx {} +"
+
+  - name: Password aging rules
+    command: "sed -i 's/99999/90/g' /etc/login.defs"
+
+# Need to find a better way to get files though - public S3 buckets aren't great.
+  - name: Get CIS-CAT tool from Systems S3 bucket
+    command: curl -o /root/CIS-CAT-v3.0.43.tgz https://s3.us-east-2.amazonaws.com/umich-systems-support/CIS-CAT-v3.0.43.tgz

@@ -1,0 +1,188 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aws_iam_role: "ec2Instances-role"
+
+  tasks:
+
+# ec2_ami_find is deprecated.  There is a bug that doesn't filter properly on the is_public flag
+# That is why we have the task below this
+# When we are on ansible 2.5 switch to ec2_ami_facts
+  - name: Find ID of AMI
+    ec2_ami_find:
+      owner: "{{ ami_owner }}"
+      name: "{{ OS_VERSION }}*"
+      is_public: "{{ public_ami }}"
+      no_result_action: "fail"
+      region: "{{ aws_region }}"
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      security_token: "{{ aws_session_token }}"
+    register: amidata
+
+  - name: Fail if we do not have the private AMI from Red Hat
+    fail:
+      msg: "This account does not have the private Red Hat AMIs and is using the expensive public ones.  CentOS recommended instead"
+    when: distro == 'RHEL' and amidata.results[0].is_public
+
+  - name: Pull VPC ID
+    ec2_vpc_net_facts:
+      filters:
+        "tag:Name": "{{ vpc_name }}"
+      region: "{{ aws_region }}"
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      security_token: "{{ aws_session_token }}"
+    register: vpcdata
+
+  - name: Pull Subnet ID
+    ec2_vpc_subnet_facts:
+      filters:
+        vpc-id: "{{ vpcdata.vpcs[0].id }}"
+        "tag:Name": "{{ subnet_name }}"
+      region: "{{ aws_region }}"
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      security_token: "{{ aws_session_token }}"
+    register: sndata
+
+  - name: Launch instance
+    ec2:
+      key_name: "{{ ec2_keypair_name }}"
+      group: "{{ SECURITYGROUPS }}"
+      instance_type: "{{ inst_type }}"
+      instance_profile_name: "{{ aws_iam_role }}"
+      image: "{{ amidata.results[0].ami_id }}"
+      vpc_subnet_id: "{{ sndata.subnets[0].id }}"
+      termination_protection: "{{ termination_protection | default('yes') }}"
+      wait: true
+      exact_count: 1
+      count_tag:
+        Role: "{{ role_tag }}"
+        Env: "{{ prod_tag }}"
+        Name: "{{ ec2_name }}"
+        TechnicalContact: "{{ TechnicalContact }}"
+      instance_tags:
+        OS: "linux"
+        Role: "{{ role_tag }}"
+        Env: "{{ prod_tag }}"
+        Name: "{{ ec2_name }}"
+        TechnicalContact: "{{ TechnicalContact }}"
+        BusinessOwner: "{{ BusinessOwner }}"
+        Managed: "{{ managed_tag }}"
+        Monitor: "{{ monitor_tag }}"
+        Costcode: "{{ costcode_tag }}"
+        Service: "{{ service_tag }}"
+        Snapshot: "{{ snapshot_tag }}"
+        DNS: "{{ dns_tag }}"
+      volumes:
+        - device_name: "/dev/sda1"
+          volume_size: "{{ disk_size_gb }}"
+          delete_on_termination: true
+      region: "{{ aws_region }}"
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      security_token: "{{ aws_session_token }}"
+    register: f_ec2
+
+  - name: Get EBS Volume ID
+    ec2_vol:
+      instance: "{{ f_ec2.tagged_instances[0].id }}"
+      device_name: /dev/sda1
+      region: "{{ aws_region }}"
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      security_token: "{{ aws_session_token }}"
+    register: ebs_disk1
+
+  - name: Tag EBS Volume
+    ec2_tag:
+      resource: "{{ ebs_disk1.volume_id }}"
+      tags:
+        Name: "{{ ec2_name }}"
+        Owner: "{{ TechnicalContact }}"
+        Notes: "Boot Disk"
+      region: "{{ aws_region }}"
+      aws_access_key: "{{ aws_access_key }}"
+      aws_secret_key: "{{ aws_secret_key }}"
+      security_token: "{{ aws_session_token }}"
+
+ 
+  #############################################################################
+  - block:
+  #############################################################################
+    - name: Setup CloudWatch Auto-Recover
+      ec2_metric_alarm:
+        state: present
+        name: "awsec2-{{ f_ec2.tagged_instances[0].id }}-High-Status-Check-Failed-System-"
+        metric: "StatusCheckFailed_System"
+        namespace: "AWS/EC2"
+        statistic: Maximum
+        comparison: ">="
+        threshold: 1.0
+        period: 60
+        evaluation_periods: 2
+        description: "Auto Recover"
+        dimensions: {'InstanceId':'{{ f_ec2.tagged_instances[0].id }}'}
+        alarm_actions: ["arn:aws:automate:us-east-2:ec2:recover"]
+        region: "{{ aws_region }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        security_token: "{{ aws_session_token }}"
+      when: auto_recover is defined and auto_recover 
+
+  #############################################################################
+  - block:
+  #############################################################################
+    - name: Add disk for syslog server
+      ec2_vol:
+        instance: "{{ f_ec2.tagged_instances[0].id }}"
+        device_name: "/dev/sdc"
+        tags:
+          Name: "{{ ec2_name }}"
+          Owner: "{{ TechnicalContact }}"
+          Notes: "Syslog Disk"
+        volume_size: "{{ remote_syslog_size }}"
+        volume_type: "gp2"
+
+    when: f_is_loghost == "yes"
+
+  #############################################################################
+  - block:
+  #############################################################################
+    - name: Get public IP of new instance
+      set_fact:
+        f_ip_addr: "{{ f_ec2.tagged_instances[0].public_ip }}"
+
+    when: IP_TYPE == "public"
+
+  #############################################################################
+  - block:
+  #############################################################################
+    - name: Get private IP of new instance
+      set_fact:
+        f_ip_addr: "{{ f_ec2.tagged_instances[0].private_ip }}"
+
+    when: IP_TYPE == "private" or IP_TYPE == "vpn"
+
+  - name: Add IP address to in-memory inventory
+    add_host:
+      name: "{{ f_ip_addr }}"
+      groups: "meminv"
+    changed_when: false
+
+  - name: Wait for instance to be launched and accessible
+    include: includes/wait-for-it.yml
+
+
+  # Deploy roles on the instance
+
+- hosts: meminv
+  become: yes
+
+  roles:
+    - role: ec2-baseline
+    - role: mos-linux

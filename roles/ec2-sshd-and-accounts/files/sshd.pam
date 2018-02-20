@@ -1,0 +1,18 @@
+#%PAM-1.0
+auth	   required	pam_sepermit.so
+auth       include	sshd-passwd
+auth       required	/lib64/security/pam_duo.so
+auth       include      postlogin
+
+account    required     pam_nologin.so
+account    include      password-auth
+
+password   include      password-auth
+
+session    required     pam_selinux.so close
+session    required     pam_loginuid.so
+session    required     pam_selinux.so open env_params
+session    optional     pam_keyinit.so force revoke
+session    include      password-auth
+session    include      postlogin
+

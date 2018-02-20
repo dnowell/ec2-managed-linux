@@ -1,0 +1,41 @@
+---
+############################################################################
+- block:
+############################################################################
+
+  - name: Install NRPE packages
+    yum:
+      name: "{{ item }}"
+      state: present
+    with_items:
+      - nrpe
+      - nrpe-selinux
+      - nagios-plugins-all
+      - nagios-common
+
+  - name: Copy nrpe.cfg to /etc/nagios/
+    copy:
+      src: "../files/nrpe.cfg"
+      dest: "/etc/nagios/"
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: Copy systems-support.cfg to /etc/nrpe.d/
+    copy:
+      src: "../files/systems-support.cfg"
+      dest: "/etc/nrpe.d/"
+      owner: nrpe
+      group: nrpe
+      mode: 0640
+
+############################################################################
+- block:
+############################################################################
+  - name: Start NRPE if we're on the VPN
+    service:
+      name: nrpe
+      enabled: yes
+      state: restarted
+
+  when: IP_TYPE == "vpn"

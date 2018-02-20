@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>rsyslog</short>
+  <description>Remote Syslog TCP and UDPe</description>
+  <port protocol="udp" port="514"/>
+  <port protocol="tcp" port="514"/>
+</service>
+

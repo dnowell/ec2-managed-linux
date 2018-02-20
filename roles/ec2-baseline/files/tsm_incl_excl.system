@@ -1,0 +1,14 @@
+exclude /afs/.../*
+exclude /usr/vice/cache/.../*
+exclude /var/vice/cache/.../*
+exclude /unix
+exclude /temp_mount/.../*
+exclude /.../core
+exclude /.../oradata/.../*      
+exclude /cdrom/.../*
+exclude /oradata*/.../* 
+exclude.dir /opt/tivoli/tsm/storage
+exclude /usr/local/logs/.../*
+exclude.dir /var/cache/yum
+exclude /var/log/lastlog/.../*
+

@@ -1,0 +1,76 @@
+# Managed by Ansible
+
+Port 22
+AddressFamily inet
+Protocol 2
+
+HostKey /etc/ssh/ssh_host_rsa_key
+
+MaxAuthTries 4
+LoginGraceTime 60
+
+LogLevel INFO
+SyslogFacility AUTHPRIV
+
+AllowGroups root
+PermitRootLogin without-password
+StrictModes yes
+
+{% if distro == "RHEL" %}
+AllowGroups ec2-user
+{% endif %}
+{% if distro == "CENTOS" %}
+AllowGroups centos
+{% endif %}
+
+{% if admin_group is defined %}
+AllowGroups {{ admin_group }}
+{% endif %}
+{% if collab_group is defined %}
+AllowGroups {{ collab_group }}
+{% endif %}
+
+UseDNS yes
+RSAAuthentication no
+PubkeyAuthentication yes
+RhostsRSAAuthentication no
+HostbasedAuthentication no
+KerberosAuthentication no
+PasswordAuthentication no
+GSSAPIAuthentication no
+{% if user_accounts == "yes"  %}
+ChallengeResponseAuthentication yes
+{% else %}
+ChallengeResponseAuthentication no
+{% endif %}
+
+UsePAM yes
+{% if user_accounts == "yes"  %}
+AuthorizedKeysFile /usr/local/etc/ssh/authorized_keys/%u_authorized_keys
+{% else %}
+AuthorizedKeysFile	.ssh/authorized_keys
+{% endif %}
+
+PermitEmptyPasswords no
+UsePrivilegeSeparation sandbox
+IgnoreRhosts yes
+X11Forwarding no
+PermitUserEnvironment no
+
+Banner /etc/ssh/banner
+
+Ciphers aes256-ctr,aes192-ctr,aes128-ctr
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-512,hmac-sha2-256,umac-128@openssh.com
+
+Subsystem sftp internal-sftp
+
+Match Address 141.211.229.16
+        Banner none
+Match Address 141.211.228.254
+        Banner none
+Match Address 141.211.76.117
+        Banner none
+Match Address 141.211.54.126
+        Banner none
+Match Address 141.211.160.87
+	Banner none

@@ -1,0 +1,15 @@
+**/[._]*.swp
+**/*.retry
+!secret-keys
+secret-keys/*
+!secret-keys/ssh-keys
+secret-keys/ssh-keys/*
+log/ansible.log
+!secret-keys/README.md
+!secret-keys/sample-tsm-creds.yml
+!secret-keys/sample-duo-creds.yml
+!secret-keys/aws-us-east-1-sample-credentials.sh
+!secret-keys/ssh-keys/README.md
+deploy/servers/*
+!deploy/servers/sample-server.yml
+deploy/ansible.cfg

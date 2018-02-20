@@ -1,0 +1,10 @@
+# Managed by Ansible
+
+{% if user_accounts == "yes"  %}
+%{{ admin_group }}  ALL=(ALL)   ALL
+{% endif %}
+{% if collab_group is defined and user_accounts == "yes" %}
+%{{ collab_group }} ALL=(ALL)   ALL
+{%endif %}
+
+

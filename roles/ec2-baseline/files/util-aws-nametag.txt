@@ -1,0 +1,75 @@
+#!/bin/bash
+
+# Managed by Ansible
+
+set -o pipefail
+
+# --------------------------------------------------------------------------- #
+#               VARIABLE DEFINITIONS
+# --------------------------------------------------------------------------- #
+
+_uri='http://169.254.169.254/latest/dynamic/instance-identity/document'
+readonly _uri="${_uri}"
+
+readonly _output="$(mktemp)"
+
+# --------------------------------------------------------------------------- #
+#               FUNCTIONS
+# --------------------------------------------------------------------------- #
+
+errout() {
+        _msg="${0##*/} error: ${1}"
+        printf '%s\n' "${_msg}"
+        cleanup
+        exit 1
+}
+
+cleanup() {
+        rm -f "${_output}"
+}
+
+get_ec2_data() {
+        curl -s "${_uri}" > "${_output}"
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'curl(1) problem while capturing EC2 data'
+        fi
+}
+
+get_region() {
+        readonly _region="$(jq -r '.region' < ${_output})"
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem determining region'
+        fi
+}
+
+get_inst_id() {
+        readonly _inst_id="$(jq -r '.instanceId' < ${_output})"
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem determining instance ID'
+        fi
+}
+
+print_nametag() {
+        aws ec2 describe-tags                                           \
+        --region "${_region}"                                           \
+        --filters "Name=resource-id,Values=${_inst_id}"                 \
+        "Name=key,Values=Name"                                          |
+        jq -r '.Tags[].Value'
+}
+
+# --------------------------------------------------------------------------- #
+#               MAIN LOGIC
+# --------------------------------------------------------------------------- #
+
+get_ec2_data
+get_region
+get_inst_id
+
+print_nametag
+
+cleanup
+
+exit 0

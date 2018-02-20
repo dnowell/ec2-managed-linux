@@ -1,0 +1,9 @@
+---
+# ENCRYPT THIS WITH ANSIBLE VAULT
+# These credentials will not work.
+# DUO application approach has not been finalized yet
+# May be set on a group / org level
+duo_ikey: "DI8UMNRU4XXX5TYYXX9N"
+duo_skey: "2F9lKq9JJKV31YL9lc7MJVmBSN6hBxLkKcEaf9TY"
+duo_apihost: "api-x6644x22.duosecurity.com"
+

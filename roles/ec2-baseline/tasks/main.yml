@@ -1,0 +1,345 @@
+---
+###########################################################################
+- block:
+###########################################################################
+
+  # This special URI and response body is unique to EC2 land.
+
+  - name: Fail if not an EC2 system
+    uri:
+      url: "http://169.254.169.254/latest/dynamic/instance-identity/document"
+      return_content: "yes"
+      timeout: 3
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Install EPEL Key on RHEL
+    rpm_key:
+      key: http://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-7
+      state: present
+
+  - name: Install EPEL package repo on RHEL
+    yum:
+      name: "{{ item }}"
+      state: present
+    with_items:
+        - https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+
+  - name: Enable RHEL Optional Channel
+    command: yum-config-manager --save --enable '*server-optional*'
+
+  - name: Enable RHEL Extrars Channel
+    command: yum-config-manager --save --enable '*rhel-server-extras*'
+                   
+  when: distro == "RHEL"
+
+###########################################################################
+- block:
+###########################################################################
+  - name: Set hostname when DNS tag is defined
+    hostname: 
+      name: "{{ dns_tag }}"
+
+  when: dns_tag != ""
+ 
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Install EPEL package repo on CentOS
+    yum:
+      name: "{{ item }}"
+      state: present
+    with_items:
+        - epel-release
+                   
+  when: distro == "CENTOS"
+
+###########################################################################
+- block:
+###########################################################################
+  - name: Install baseline packages
+    yum:
+      name: "{{ item }}"
+      state: present
+    with_items:
+      - at
+      - bash-completion
+      - bc
+      - bzip2
+      - cowsay
+      - curl
+      - gawk
+      - git
+      - jq
+      - mlocate
+      - ntp
+      - python2-pip
+      - sysstat
+      - tmux
+      - unzip
+      - telnet
+      - vim
+      - tcp_wrappers
+
+  - name: Install latest AWS CLI (newer than CentOS repo)
+    pip:
+      name: "awscli"
+      state: present
+
+  - name: Install pexpect library to use extract module
+    pip:
+      name: pexpect
+      state: latest
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Copy useful utility scripts
+    copy:
+      src: "util-{{ item }}.txt"
+      dest: "/usr/local/bin/{{ item }}"
+      mode: '555'
+    with_items:
+      - "aws-info"
+      - "aws-nametag"
+      - "aws-alltags"
+      - "json-valid"
+      - "port-scan"
+
+  - name: Copy reminder/tips to profile.d
+    copy:
+      src: "profile.d.txt"
+      dest: "/etc/profile.d/80-utils.sh"
+      mode: '644'
+
+  - name: Grep aliases and set -o vi in profile.d
+    copy:
+      src: "um-local.profile.d"
+      dest: "/etc/profile.d/um-local.sh"
+      mode: '644'
+
+  - name: Copy swapfile manager script
+    copy:
+      src: "cron-swapfile-manager.txt"
+      dest: "/usr/local/sbin/swapfile-manager"
+      mode: '500'
+      owner: root
+
+  - name: Install a cronjob to run swapfile manager script
+    cron:
+      name: "manage swapfile"
+      minute: "6,26,46"
+      user: root
+      job: "/usr/local/sbin/swapfile-manager"
+      cron_file: "ansible_swapfile-manager"
+      state: present
+
+- name: Set up critical monitoring scripts
+  vars:
+    critical_scripts:
+      - name: fsfull-check
+        jobname: monitor fs space
+      - name: swapuse-check
+        jobname: monitor swap usage 
+  block:
+  - name: Copy critical (filesystem, swap) monitoring scripts
+    template:
+      src: "cron-{{ item.name }}.j2"
+      dest: "/usr/local/sbin/{{ item.name }}"
+      mode: '500'
+      owner: "{{ ansible_user }}"
+    with_list: "{{ critical_scripts }}"
+
+  - name: Install cronjobs to run monitoring scripts
+    cron:
+      name: "{{ item.jobname }}"
+      minute: "*/5"
+      user: "{{ ansible_user }}"
+      job: "/usr/local/sbin/{{ item.name }}"
+      cron_file: "ansible_{{ item.name }}"
+      state: present
+    with_list: "{{ critical_scripts }}"
+
+
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Pull in tsm variables
+    include_vars:
+      file: "{{ tsm_location }}"
+
+
+  - name: Create temporary directories for installers
+    file:
+      path: "{{ item }}"
+      state: directory
+      mode: 0777
+    with_items:
+      - /tmp/installers
+      - /tmp/installers/SpectrumProtectClient
+
+  - name: Download Spectrum Protect Client
+    get_url:
+      url: ftp://public.dhe.ibm.com/storage/tivoli-storage-management/maintenance/client/v7r1/Linux/LinuxX86/BA/v718/7.1.8.0-TIV-TSMBAC-LinuxX86.tar
+      dest: /tmp/installers/7.1.8.0-TIV-TSMBAC-LinuxX86.tar
+      mode: 0777
+
+  - name: Extract Spectrum Protect Installer into /tmp/installers/SpectrumProtectClient/
+    unarchive:
+      src: /tmp/installers/7.1.8.0-TIV-TSMBAC-LinuxX86.tar
+      dest: /tmp/installers/SpectrumProtectClient/
+      copy: no
+      creates: /tmp/installers/SpectrumProtectClient/README_enu.htm
+
+  - name: Install gskcrypt64 and gskssl64
+    yum:
+      name: "{{ item }}"
+      state: present
+    with_items:
+      - /tmp/installers/SpectrumProtectClient/gskcrypt64-8.0.50.78.linux.x86_64.rpm
+      - /tmp/installers/SpectrumProtectClient/gskssl64-8.0.50.78.linux.x86_64.rpm
+
+  - name: Install Spectrum Packages
+    yum:
+      name: "{{ item }}"
+      state: present
+    with_items:
+      - /tmp/installers/SpectrumProtectClient/TIVsm-API64.x86_64.rpm
+      - /tmp/installers/SpectrumProtectClient/TIVsm-APIcit.x86_64.rpm
+      - /tmp/installers/SpectrumProtectClient/TIVsm-BA.x86_64.rpm
+      - /tmp/installers/SpectrumProtectClient/TIVsm-BAcit.x86_64.rpm
+
+  - name: Copy dsm.opt
+    copy:
+      src: "dsm.opt"
+      dest: "/opt/tivoli/tsm/client/ba/bin/dsm.opt"
+      mode: '644'
+
+  - name: Copy tsm_incl_excl.system
+    copy:
+      src: "tsm_incl_excl.system"
+      dest: "/usr/local/etc/tsm_incl_excl.system"
+      mode: '644'
+
+  - name: Copy dsm.sys template
+    template:
+      src: "dsm.sys.j2"
+      dest: "/opt/tivoli/tsm/client/ba/bin/dsm.sys"
+      mode: '644'
+
+  - name: Copy server SSL cert
+    copy:
+      src: "cert256.arm"
+      dest: "/opt/tivoli/tsm/client/ba/bin/cert256.arm"
+      mode: '644'
+
+  - name: Create certificate store
+    shell: gsk8capicmd_64 -keydb -create -populate -db dsmcert.kdb -pw `tr -d -c "a-zA-Z0-9" < /dev/urandom | head -c 20` -stash
+    args:
+      chdir: /opt/tivoli/tsm/client/ba/bin
+      creates: /opt/tivoli/tsm/client/ba/bin/dsmcert.kdb
+    become: true
+
+  - name: Import TSM Server certificate into store
+    command: gsk8capicmd_64 -cert -add -db dsmcert.kdb -stashed -label "TSM server VDCTSM1 self-signed key" -file /opt/tivoli/tsm/client/ba/bin/cert256.arm -format ascii
+    args:
+      chdir: /opt/tivoli/tsm/client/ba/bin
+    become: true
+
+  - name: Check to see if hostname is already registered
+    shell: "dsmadmc -id={{ tsm_admin_user }}  -pass={{ tsm_admin_pw }} -dataonly=yes query node {{ ansible_hostname }}"
+    register: is_registered
+    failed_when: is_registered.rc != 0 and is_registered.rc != 11
+
+  - name: Register client with TSM Server
+    shell: "dsmadmc -id={{ tsm_admin_user }}  -pass={{ tsm_admin_pw }} register node {{ ansible_hostname }} `tr -d -c 'a-zA-Z0-9' < /dev/urandom | head -c 20` domain=vdciqprod userid={{tsm_admin_user}}"
+    when: is_registered.rc == 11
+    args:
+      chdir: ~
+
+  - name: Check to see if node already has a schedule
+    shell: "dsmadmc -id={{ tsm_admin_user }}  -pass={{ tsm_admin_pw }} -dataonly=yes query schedule nodes={{ ansible_hostname }}"
+    register: has_schedule
+    failed_when: has_schedule.rc != 0 and has_schedule.rc != 11
+
+  - name: Associate node with a backup schedule
+    shell: "dsmadmc -id={{ tsm_admin_user }}  -pass={{ tsm_admin_pw }} define association {{ tsm_admin_user }}PROD {{ tsm_admin_user }}SCHED{{ tsm_time }} {{ ansible_hostname }}"
+    when: has_schedule.rc == 11
+    args:
+      chdir: ~
+
+  - name: Initialize password file
+    expect:
+      command: dsmc
+      responses:
+        Please enter your user id*: "{{ tsm_admin_user }}"
+        Please enter password for user id*: "{{ tsm_admin_pw }}"
+        tsm>: "quit"
+      chdir: ~
+
+  - name: Enable dsmcad service
+    service:
+      name: dsmcad
+      enabled: yes
+
+  - name: Start dsmcad service
+    service:
+      name: dsmcad
+      state: started
+
+## TODO: Clean up installers
+
+  when: tsm == "yes"
+
+
+###########################################################################
+- block:
+###########################################################################
+
+  - include_role:
+      name: ec2-sshd-and-accounts
+
+  - include_role:
+      name: ec2-cis-cat
+
+  - include_role:
+      name: ec2-yum-cron
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Check for presence of chronyd
+    stat:
+      path: "/sbin/chronyd"
+    register: chrony
+
+  - name: Disable chronyd if it's installed
+    service:
+      name: "chronyd"
+      enabled: no
+      state: stopped
+    when: chrony.stat.exists
+
+  - name: Set EST timezone
+    timezone:
+      name: EST
+
+  - name: Make sure baseline services are running and enabled
+    service:
+      name: "{{ item }}"
+      enabled: yes
+      state: started
+    with_items:
+      - atd
+      - crond
+      - sshd
+      - rsyslog
+      - ntpd

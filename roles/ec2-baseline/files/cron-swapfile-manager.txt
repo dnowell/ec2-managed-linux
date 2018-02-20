@@ -1,0 +1,100 @@
+#!/bin/bash
+
+umask 0077
+
+# --------------------------------------------------------------------------- #
+#                       VARIABLE DEFINITIONS
+# --------------------------------------------------------------------------- #
+
+PATH=/usr/bin:/bin:/sbin
+
+readonly _swapfile=/mnt/swapfile
+readonly _size_in_mb=1024
+readonly _self="${0##*/}"
+readonly _output="/tmp/${_self}.output"
+
+# --------------------------------------------------------------------------- #
+#                       FUNCTIONS
+# --------------------------------------------------------------------------- #
+
+errout() {
+        local _msg="${_self}: ${1}"
+
+        logger -p local3.err "${_msg}"
+        exit 1
+}
+
+check_if_swap_is_active() {
+        local _rc
+
+        grep -Eq 'SwapTotal.\s+0\s' /proc/meminfo >> "${_output}" 2>&1
+        _rc=${?}
+
+        if [ ${_rc} -eq 0 ] ; then
+                # Swap is not currently active
+                return 0
+        elif [ ${_rc} -eq 1 ] ; then
+                # Swap is active
+                return 1
+        else
+                errout 'Problem determining swap status'
+        fi
+}
+
+check_if_swapfile_exists() {
+        if [ -e "${_swapfile}" ] ; then
+                return 0
+        else
+                return 1
+        fi
+}
+
+create_zeroed_swapfile() {
+        dd if=/dev/zero of="${_swapfile}" bs=1024k count=${_size_in_mb} \
+        >> "${_output}" 2>&1
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem creating swapfile'
+        fi
+}
+
+format_swapfile() {
+        mkswap "${_swapfile}" >> "${_output}" 2>&1
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem formatting swapfile'
+        fi
+}
+
+activate_swap() {
+        swapon "${_swapfile}" >> "${_output}" 2>&1
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem activating swap'
+        fi
+}
+
+get_swap_going() {
+        check_if_swapfile_exists
+
+        if [ ${?} -eq 1 ] ; then
+                create_zeroed_swapfile
+                format_swapfile
+        fi
+
+        activate_swap
+}
+
+# --------------------------------------------------------------------------- #
+#                       MAIN LOGIC
+# --------------------------------------------------------------------------- #
+
+cp /dev/null "${_output}"
+
+check_if_swap_is_active
+
+if [ ${?} -eq 0 ] ; then
+        get_swap_going
+fi
+
+exit 0

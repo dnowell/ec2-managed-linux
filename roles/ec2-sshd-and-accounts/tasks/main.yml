@@ -1,0 +1,283 @@
+---
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Create base for home directories
+    file:
+      path: "{{ homedir_base }}"
+      state: directory
+
+  - name: Create admin group
+    group:
+      name: "{{ admin_group }}"
+      gid: "{{ admin_gid }}"
+      state: present
+
+  - name: Install Duo GPG Key
+    rpm_key:
+      key: https://duo.com/RPM-GPG-KEY-DUO
+      state: present
+
+
+  - name: Duo Yum Repo
+    copy:
+      src: duosecurity.repo
+      dest: "/etc/yum.repos.d/duosecurity.repo"
+      mode: '644'
+
+  - name: Install duo, perl-LDAP and pam_krb5
+    yum:
+      name: "{{ item }}"
+      state: present
+    with_items:
+      - pam_krb5
+      - perl-LDAP
+      - duo_unix
+
+  - name: Copy ldap expansion scripts for account creation
+    copy:
+      src: "{{ item }}"
+      dest: "/usr/local/bin/{{ item }}"
+      mode: '755'
+      owner: root
+    with_items:
+      - "ldgrp2accts"
+      - "expand_mcommgrp"
+      - "group-assign.sh"
+
+  - name: Create admin shell accounts
+    command: /usr/local/bin/ldgrp2accts -n {{ admin_mcomm_group | quote }}
+
+  - name: Put admins in admin group
+    command: /usr/local/bin/group-assign.sh {{ admin_mcomm_group | quote }} {{ admin_group | quote }}
+     
+
+  - name: Create admin sudoers file
+    template:
+      src: "sudoers.d.j2"
+      dest: "/etc/sudoers.d/80-umadmins"
+
+
+  - name: Copy Kerberos config
+    copy:
+      src: "krb5.conf"
+      dest: "/etc/krb5.conf"
+      owner: root
+      mode: '644'
+
+  - name: Copy PAM config
+    copy:
+      src: "{{ item }}"
+      dest: "/etc/pam.d/{{ (item | splitext)[0] }}"
+      owner: root
+      mode: '644'
+    with_items:
+      - "sshd.pam"
+      - "sshd-passwd.pam"
+      - "system-auth-ac.pam"
+      - "password-auth-ac.pam"
+
+  - name: Create authorized keys repo directory
+    file:
+      path: /usr/local/etc/ssh/authorized_keys
+      state: directory
+
+
+  - name: Copy various ssh keys
+    copy:
+      src: "{{ item }}"
+      dest: "/usr/local/etc/ssh/authorized_keys/{{ item }}"
+      mode: '644'
+      owner: root
+    with_items:
+      - "root_authorized_keys"
+      - "1vulnscan_authorized_keys"
+      - "1bmcfdtd_authorized_keys"
+
+  when: user_accounts == "yes"
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Move ec2-user key to /usr/local/etc/ssh/authorized_keys
+    command: cp /home/ec2-user/.ssh/authorized_keys /usr/local/etc/ssh/authorized_keys/ec2-user_authorized_keys
+
+  - name: ec2-user key permissions
+    file:
+      path: /usr/local/etc/ssh/authorized_keys/ec2-user_authorized_keys
+      mode: '644'
+
+  when: user_accounts == "yes" and distro == "RHEL"
+
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Move centos key to /usr/local/etc/ssh/authorized_keys
+    command: cp /home/centos/.ssh/authorized_keys /usr/local/etc/ssh/authorized_keys/centos_authorized_keys
+
+  - name: centos key permissions
+    file:
+      path: /usr/local/etc/ssh/authorized_keys/centos_authorized_keys
+      mode: '644'
+
+  when: user_accounts == "yes" and distro == "CENTOS"
+
+
+###########################################################################
+- block:
+###########################################################################
+
+#  - name: Create Duo Application
+#    connection: local
+#    command: /home/dnowell/create-duo-app.sh
+
+  - name: Pull in Duo variables
+    include_vars:
+      file: "{{ duo_location }}"
+
+  when: user_accounts == "yes"
+
+
+###########################################################################
+- block:
+###########################################################################
+
+
+  - name: Create PAM duo config file
+    template:
+      src: "pam_duo.conf.j2"
+      dest: "/etc/duo/pam_duo.conf"
+      mode: '600'
+
+  when: user_accounts == "yes" and duo_ikey is defined
+
+
+###########################################################################
+- block:
+###########################################################################
+# I could be convinced to make this block optional
+# Maybe only apply if managed is "yes"
+# But on the other hand, a "blessed" image should have some security 
+# and allow Vulnerability scans & ADDM, right?
+# If we make this optional, have to update sshd_config.j2 to make
+# the authorized_keys location change optional as well
+
+
+
+  - name: Copy ADDM sudoers file
+    copy:
+      src: "75-addm-sudoers"
+      dest: "/etc/pam.d/75-1bmcfdtd"
+
+  - name: Create UM-specific groups
+    group:
+      name: 1vulnscan
+      state: present
+      gid: 4296
+
+  - name: Create ADDM user
+    user:
+      name: 1bmcfdtd
+      uid: 2739
+      state: present
+
+  - name: Create Vuln Scan User
+    user:     
+      name: 1vulnscan
+      uid: 4296
+      group: 1vulnscan
+      state: present
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Create root .ssh directory
+    file:
+      path: /root/.ssh
+      state: directory
+      mode: '700'
+
+  - name: Create 1bmcfdtd .ssh directory
+    file:
+      path: /home/1bmcfdtd/.ssh
+      state: directory
+      owner: 1vulnscan
+      mode: '700'
+
+  - name: Create 1vulnscan .ssh directory
+    file:
+      path: /home/1vulnscan/.ssh
+      state: directory
+      owner: 1vulnscan
+      mode: '700'
+
+  - name: Copy root ssh key
+    copy:
+      src: root_authorized_keys
+      dest: "/root/.ssh/authorized_keys"
+      mode: '644'
+      owner: root
+
+  - name: Copy 1vulnscan ssh key
+    copy:
+      src: 1vulnscan_authorized_keys
+      dest: "/home/1vulnscan/.ssh/authorized_keys"
+      mode: '644'
+      owner: 1vulnscan
+
+  - name: Copy 1bmcfdtd ssh key
+    copy:
+      src: 1bmcfdtd_authorized_keys
+      dest: "/home/1bmcfdtd/.ssh/authorized_keys"
+      mode: '644'
+      owner: 1vulnscan
+
+  when: user_accounts == "no"
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Create collaborative group
+    group:
+      name: "{{ collab_group }}"
+      gid: "{{ collab_gid }}"
+      state: present
+
+  when: collab_group is defined and collab_gid is defined and user_accounts == "yes"
+
+###########################################################################
+- block:
+###########################################################################
+
+# Need to run ldgrp2accounts or something to populate shell acounts
+
+  - name: Create user shell accounts
+    command: /usr/local/bin/ldgrp2accts -n {{ TechnicalContact | quote }}
+
+  - name: Put users in collab group
+    command: /usr/local/bin/group-assign.sh {{ TechnicalContact | quote }} {{ collab_group | quote }}
+
+  when: user_accounts == "yes"
+
+###########################################################################
+- block:
+###########################################################################
+
+  - name: Install OpenSSH server banner
+    copy:
+      src: "banner.txt"
+      dest: "/etc/ssh/banner"
+    notify: restart sshd
+
+  - name: Install OpenSSH server configuration
+    template:
+      src: "sshd_config.j2"
+      dest: "/etc/ssh/sshd_config"
+      mode: '600'
+    notify: restart sshd

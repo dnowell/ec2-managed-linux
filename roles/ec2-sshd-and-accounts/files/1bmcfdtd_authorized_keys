@@ -1,0 +1,2 @@
+# 1bmcfdtd used for ADDM discovery
+from="addmasbnp.dsc.umich.edu,addmasbp.dsc.umich.edu,anhinga.dsc.umich.edu,yuhina.dsc.umich.edu,snakebird.dsc.umich.edu" ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEA0kfOEpPh/9EtnGcoKLq5v1MReY3mwTufmOxx4ceBzYiCEojGzIa4pRSOnUEzTifkXc5OStCts+qbrvxzGCCTA+xHTarKmiUGsLw4QBX078vx/AIFnweTO4StsUJY1Sue9Dn0gHGCWdbF7eiHonvuo2pZicijFhxJQBW3Tao+PwaV/g6bLtGSbX2kQ2hHeyXquEyT45nT64DC1n94B4UM9ZAwzcH7Lml0wQgcLFLI/L9782ukm8EBdjf5YkRFJNgWd2OpXA/WNs31N/P9wJaUviSt3V24JVqFJqlc5ucB9rM2T73nxQLu7L61LI7TJXEVbcPXcTTIR67eI2S0y27Z+Q== addm_anhinga

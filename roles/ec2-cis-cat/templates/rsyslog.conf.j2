@@ -1,0 +1,43 @@
+# Managed by Ansible
+
+#### MODULES ####
+
+$ModLoad imuxsock
+$ModLoad imjournal
+$ModLoad immark
+
+{% if f_is_loghost is defined and f_is_loghost == "yes" %}
+$ModLoad imudp
+$ModLoad imtcp
+# Listen on both UDP and TCP ports so we have flexibility
+$UDPServerRun 514
+$InputTCPServerRun 514
+{% endif %}
+
+#### GLOBAL DIRECTIVES ####
+
+$WorkDirectory /var/lib/rsyslog
+$ActionFileDefaultTemplate RSYSLOG_TraditionalFileFormat
+$IncludeConfig /etc/rsyslog.d/*.conf
+$OmitLocalLogging on
+$IMJournalStateFile imjournal.state
+$FileCreateMode 0640
+
+#### RULES ####
+
+*.info;mail.none;authpriv.none;cron.none        /var/log/messages
+authpriv.*                                      /var/log/secure
+mail.*                                          -/var/log/maillog
+cron.*                                          /var/log/cron
+*.emerg                                         :omusrmsg:*
+uucp,news.crit                                  /var/log/spooler
+local7.*                                        /var/log/boot.log
+
+
+{% if f_is_loghost == "no" and IP_TYPE != "vpn"  %}
+*.*                                             @{{ loghost }}
+{% endif %}
+{% if f_is_loghost is not defined and IP_TYPE != "vpn"  %}
+*.*                                             @{{ loghost }}
+{% endif %}
+

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>NRPE</short>
+  <description>Nagios Remote Plugin Executable</description>
+  <port protocol="tcp" port="5666"/>
+</service>
+

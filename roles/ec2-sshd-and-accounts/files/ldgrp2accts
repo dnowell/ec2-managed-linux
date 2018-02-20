@@ -1,0 +1,987 @@
+#!/usr/bin/perl -w
+
+# vim:nu sw=4 expandtab:
+
+#---------------------------------------------------------------------
+# NOTE: This tool is archived.  Please check out
+#       a copy if you are planning on modifying the main copy.
+#
+# $Id: ldgrp2accts,v 1.12 2014/07/07 18:11:07 root Exp $
+#
+# Repository: $Source: /share/sysadmin/public/linux/UM-installs/usr/local/admin/bin/RCS/ldgrp2accts,v $
+#
+# Given one or more ldap groups, create login accounts for all
+# users in that group. Written for use on ITS Unix Hosting machines
+# with various features specific to those hosts.
+#
+# Construction notes:
+#   This passes both 'perl -w' and 'use strict' silently.
+#   Tab stops are set at 8, shift width at 4 (see vim: line above).
+#
+# TODO (general): Lots and lots and lots. Members of ITS Unix
+#   Support group can follow the discussion in the group wiki.
+# TODO 2012/10/11 scs
+#   * Enable verification before actual creation, with default to 'on'.
+#     Will need a switch to override it for batch/cron use.
+#   * Maybe capture group synonyms so we don't query against the dups
+#   * Finish implementing a -d <dir> switch to indicate that home
+#     directories should be created in a non-default place. The useradd
+#     command has some similar configuration stuff, and that may be the
+#     right place to put it. References to -d <dir> have been removed
+#     in 1.5; compare the to versions to recover the partial implementation.
+#
+# $Log: ldgrp2accts,v $
+# Revision 1.12  2014/07/07 18:11:07  root
+# Adding path to useradd, fails in cron otherwise
+# dnowell
+#
+# Revision 1.11  2014/04/15 21:51:08  scs
+# A few more manual page tweaks.
+#
+# Revision 1.10  2014/04/15 19:10:58  scs
+# Manual page improvements only.
+#
+# Revision 1.9  2014/02/25 22:03:47  scs
+# Fixed a couple of trivial complaints when ident attempts to tell you
+# the RCS version data.
+#
+# Revision 1.8  2012/12/21 20:44:26  scs
+# Added internal pod man page, modified help to generate it.
+#
+# Revision 1.7  2012/12/21 04:05:51  scs
+# Added -f switch for file list groups.
+#
+# Revision 1.6  2012/10/12 19:44:21  scs
+# Supressible prompt for account creation.
+#
+# Revision 1.5  2012/10/12 16:24:36  scs
+# Backed out the -d/top directory partial implementation.
+#
+# Revision 1.4  2012/10/12 16:14:07  scs
+# Corrected some mismatches between the help message and the
+# actual way switches work.
+#
+# Revision 1.3  2012/10/11 23:23:36  scs
+# Looks like a working version.
+#
+# Revision 1.2  2012/10/11 22:21:56  scs
+# A working version, still needs a help message.
+#
+# Revision 1.1  2012/10/11 19:53:20  scs
+# Initial revision
+#
+#---------------------------------------------------------------------
+
+#---------------------------------------------------------------------
+# Generic modules and their location(s)
+#---------------------------------------------------------------------
+
+use     strict;
+use     English;        # Strongly recommended for readability
+use     Carp;           # Creates very detailed and useful debug msgs
+use     diagnostics;    # output from perl -w becomes more verbose/useful
+use     Net::LDAP;      # We're going to query mcommunity directly
+
+use     Data::Dumper;   # Dump complex structures for debugging
+$Data::Dumper::Indent = 1;  # . . . but do it concisely
+
+#---------------------------------------------------------------------
+# Who the heck are we?  Used in many error messages, define early.
+#---------------------------------------------------------------------
+
+use     File::Basename;
+my      $TOOL_INVOCATION = $0;
+my      $TOOL = basename $0;
+
+# These funky lines define a variable named VERSION which we build from
+# the RCS/CVS revision number.
+
+my $VERSION = '$Revision: 1.12 $';
+$VERSION =~ s/^.+\s+(\S+)\s.*$/$1/g;
+my $MAILTO = 'its.systems.support.unix@umich.edu';
+
+
+#---------------------------------------------------------------------
+# Set up debugging control. Use a debug hash so we can turn debugging
+# on and off in a feature-based manner. Declare all valid settings and
+# set them as appropriate.
+#---------------------------------------------------------------------
+
+my %dbg = (
+    gecos      => 0,    # Show processing line by line
+    switches   => 0,    # Print what we've set the switches to
+    ldgrp      => 0,    # Show ldap group entries
+    ldusr      => 0,    # Show ldap user entries
+    checkpwent => 0,    # Show checking of /etc/passwd entries
+    create     => 0,    # Creating user accounts
+    trace      => 0,    # Trace subroutine calls (show flow of control)
+    chkmember  => 0,    # Debug detecting members
+    debug      => 0,    # Debug debugging
+);
+
+# If there is an environment variable $TOOL_DEBUG (all in uppper
+# case), use it to override the debug settings.
+
+my $dbg_env = uc "${TOOL}_DEBUG";
+if ( exists $ENV{$dbg_env} ) {
+    print STDERR "Debug ENV $dbg_env is '$ENV{$dbg_env}'\n" if $dbg{debug};
+    foreach my $d ( split /,/, "$ENV{$dbg_env}" ) {
+        if ( exists $dbg{$d} ) {
+            $dbg{$d} = 1;
+            print STDERR "Debug value '$d' turned on from \$$dbg_env.\n";
+        } else {
+            print STDERR "Ignoring non-existant debug value '$d' in \$$dbg_env.\n";
+        }
+    }
+} else {
+    print STDERR "Env var $dbg_env not set\n" if $dbg{debug};
+}
+undef $dbg_env;
+
+# End debug setups.
+
+#---------------------------------------------------------------------
+# Option definitions. We use POSIX (bundling) and GNU extensions.
+#---------------------------------------------------------------------
+
+use Getopt::Long qw(:config bundling no_ignore_case auto_abbrev);
+
+# Keep these in sync with the usage and help subroutines, but bear in
+# mind that some switches (like debug and sometimes verbose) may not
+# be advertised to the user.  See the usage/help subroutines for easy
+# and reliable ways to keep the printing of default values in sync with
+# their actual settings.
+
+my (            # Declare all the variables set by the switches
+    $dryrun,    # Don't create accounts, just describe
+    $acctwarn,  # Supress warnings about pre-existing accounts
+    $verify,    # Supress verification of account creation
+    $verbose,   # Duh
+    $help,      # Print help message and exit
+    $usage,     # Print usage message and exit
+    $version,   # Print version message and exit
+    $listfile,  # A file to read groupnames from
+);
+
+# Set the switches to their defaults. For booleans zero is off,
+# anything else is on. Strings are set to their default values or
+# null if not used unless defined. If the usage message prints the
+# default value, set a string now describing their default.
+
+$dryrun  = 0;    my $dryrun_dflt    = $dryrun    ? "yes" : "no";
+$acctwarn = 0;   my $acctwarn_dflt  = $acctwarn  ? "yes" : "no";
+$verbose = 0;    my $verbose_dflt   = $verbose   ? "yes" : "no";
+$verify = 0;     my $verify_dflt    = $verbose   ? "verify" : "no verify";
+$listfile = "";
+$help = 0;
+$usage = 0;
+$version = 0;
+
+# Define all the switchs and the variables they'll use
+
+my %switches = (
+    # Specific actions/modifications for the run
+    't|test'        => \$dryrun,
+    'w|warning'     => \$acctwarn,
+    'n|noverify'    => \$verify,
+    'f|file=s'      => \$listfile,
+    # Boiler plate switches that print a message and exit
+    'h|help'        => \$help,
+    'u|usage'       => \$usage,
+    # Other boiler plate switches
+    'version'       => \$version,
+    'v|verbose!'    => \$verbose,
+    'perlwarn!'     => \$WARNING,   # Turn on perl -w flag
+);
+
+# Do *not* actually parse the switches until the usage statements
+# are built, below.
+
+# Usage and help messages, and basic setup for defining them.
+#
+# The help function prints a help message on STDERR and exits.  It takes
+# no parameters, and will complain if misused.
+#
+# The usage function will print an optional set of caller-supplied
+# messages, followed by a standard usage message.
+#
+# The standard usage and help messages include the name and version
+# number of the program being used.  Some defaults are indicated;
+# the messages should be defined before switches are checked.
+
+# The usage function
+#
+# If you call this function with one or more strings of your
+# own, it assumes you're telling the user about a usage error.
+# Your strings will be printed to STDERR, along with the generic
+# usage statement. It will exit with a non-zero value.
+#
+# If you don't pass any strings, it assumes the user has actually
+# asked for a usage statement. Since that's not an error, the
+# standard usage message is printed to stdout and we exit zero.
+
+sub usage {
+    my  $retval = 0;
+    my  $msg = "Proper usage of $TOOL is
+
+    $TOOL [ switches ]  groupname [ groupname ... ]
+
+where 'groupname' is one or more MCommunity groups whose
+members should be given login accounts on this system.
+
+  -w   --warning      Supress warnings about accounts that already
+                      exist.
+  -t   --test         Don't actually provision the accounts, just
+                      say what you would have done.
+  -n   --noverify     Supress verification prompts before creating
+                      an account (default: $verify_dflt).
+  -f file             Instead of taking groupnames on the command
+                      line, read them from the file.
+  -u   --usage        Print this usage message and exit.
+  -h   --help         Print a help message and exit.
+       --version      Print version number of $TOOL and exit.
+
+  -v   --verbose      Be verbose (default: $verbose_dflt).
+
+Try '$TOOL -h' for other information.
+
+$TOOL version $VERSION - send reports to $MAILTO.
+";
+    if ( @_ ) {
+        $retval = 1;
+        print STDERR "$TOOL: ";
+        foreach ( @_ ) {
+            print STDERR $_, "\n";
+        }
+        print STDERR "\n";
+        print STDERR $msg;
+    } else {
+        print STDOUT $msg;
+        $retval = 0;
+    }
+    exit $retval;
+}
+
+sub help {
+    my  $arg_count = scalar( @_ );
+    system "perldoc $TOOL_INVOCATION";
+    carp "$TOOL internal error: help called with args" if ( $arg_count );
+    exit 0;
+}
+
+# Trim all whitespace
+sub trimrl ( $ ) {
+    my ( $var ) = @_;
+    $var =~ s/^\s+//;
+    $var =~ s/\s+$//;
+    return $var;
+}
+
+# ------------------------------------------------------------------------
+# A couple of little subroutines to show debug settings and option
+# settings. Used primarily to debug them; see the usage below.
+# ------------------------------------------------------------------------
+
+# Show all the debug settings. This function never changes.
+
+sub dump_debug_values ( $ ) {
+    printf STDERR "$1";
+    foreach my $key ( sort keys %dbg ) {
+        printf STDERR "%20.20s: %- 3s (%d)\n",
+            $key, $dbg{$key} ? "ON" : "OFF", $dbg{$key};
+    }
+    printf STDERR "$TOOL version $VERSION.\n" unless $dbg{options};
+}
+
+# Show all the option settings. This function is different for
+# every script.
+
+sub dump_option_values( $ ) {
+    printf STDERR "$1 processing, option values are:\n";
+    my $fmt = "%20.20s: %s\n";
+    printf STDERR $fmt, "Verbose", $verbose ? "yes" : "no";
+    printf STDERR $fmt, "Version", $version ? "yes" : "no";
+    printf STDERR $fmt, "Warning", $dryrun  ? "yes" : "no";
+    printf STDERR $fmt, "Noverify", $verify  ? "yes" : "no";
+    printf STDERR "$TOOL version $VERSION.\n";
+}
+
+# ------------------------------------------------------------------------
+# Process the switches, giving immediate help/usage if requested
+# ------------------------------------------------------------------------
+
+dump_debug_values "Before" if $dbg{debug};
+dump_option_values "Before" if $dbg{option};
+
+usage( "The above switches are not valid." ) if ! GetOptions( %switches );
+
+dump_debug_values "After" if $dbg{debug};
+dump_option_values "After" if $dbg{option};
+
+usage if $usage;
+help if $help;
+if ( $version ) {
+    print "$TOOL version $VERSION\n";
+    exit 0;
+}
+
+printf STDERR "$TOOL version $VERSION running in verbose mode.\n" if $verbose;
+
+if ( ! scalar @ARGV and $listfile =~ /^$/ ) {
+    usage "You must supply at least one group or a list file.";
+    exit 1;
+}
+
+my @grouplist = @ARGV;
+if ( "$listfile" !~ /^$/ ) {
+    if ( ! open LF, "<$listfile" ) {
+        printf STDERR "Cannot open group list file '$listfile'.\n";
+        exit 1;
+    }
+    foreach (<LF>) {
+        next if /^#/;   # Skip comments
+        chomp;
+        push @grouplist, trimrl( $_ );
+    }
+}
+
+# End of option processing
+# ------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------
+# Boiler plate functions (stolen from other libraries)
+# ------------------------------------------------------------------------
+
+
+# SubSub - error message and debugging function
+#
+# Returns the name of the function that called it so the function can#
+# identify itself in error messages. Strip out the main:: if it's in# the
+# name. If $dbg{trace} is on, this will automaticly print subroutine# tracing
+# messages for all functions that call it.
+
+sub SubSub {
+    my $caller = ( caller(1) )[3];
+    $caller =~ s/main:://;
+    print STDERR "$caller called.\n" if $dbg{trace};
+    return $caller;
+}
+
+
+# ------------------------------------------------------------------------
+# Functions written for this tool and their related global variables.
+# ------------------------------------------------------------------------
+
+my %users = ();     # We'll build the user list/info in here
+my %unique_users = ();
+my ( $ldap, $gmesg );
+
+my %result_stats = (
+    users        => 0,
+    creatable    => 0,
+    created      => 0,
+    failed       => 0,
+    already_have => 0,
+    badrequest   => 0,
+    skipped      => 0,
+);
+
+# ------------------------------------------------------------------------
+
+
+# mkuid4uniqname - create a consistent UID for a uniqname without one.
+#
+# If we encounter what seems to be a valid user but there is no
+# user ID number for him in the mcommunity (ldap) description,
+# generate one that is highly likely to be unique but will be
+# consistent - that is, always generate the same UID number for
+# the same uniqname. In that way the user will have the same uid
+# number on all systems where this problem occurred.
+#
+# To do this, we take a cryptographic checksum of the uniqname and
+# convert it into a 24 bit number, ie, a number from 0 to 16,777,216.
+# Lest you worry that md5sum is too much computation, it takes less
+# than a millionth of a second.
+#
+# At UM there is a gap in the UID numbers between 2,000,000 and
+# 99,000,000. Since we have no clue why the gap is there nor if any
+# of it is reserved for special purpose, we just map our new UID
+# in the range 4,000,000 and 20,777,216 and pray.
+#
+# Ideally this is just a stopgap, as mcommunity users without UIDs
+# should get reported to and repaired by the mcommunity group. At
+# that point we should come back to the user account and fix it to
+# map the real UID.
+
+use Digest::MD5 qw(md5 md5_hex);
+
+sub mkuid4uniqname( $ ) {
+    my ( $uniqname ) = @_;
+    my @arr = split //, uc( md5_hex( $uniqname ) );
+    return 4000000 + hex join '', @arr[0..5];
+}
+
+# Uncomment to test mkuid4uniqname
+#
+#foreach my $u ( "scs", "adbisaro", "phred", "scs", "phred", "adbisaro", '') {
+#    printf STDERR "Uniqname '%s' generated '%d'\n", $u,
+#    mkuid4uniqname $u;
+#}
+
+
+# prompt_for_creation
+#
+# If the user has not supressed validation, prompt him for a user
+# to be created. Return 1 if we should create, 0 otherwise.
+
+sub prompt_for_creation( $ $ $ ) {
+    my ( $uniqname, $uid, $fullname ) = @_;
+    my $name = SubSub();
+    my $reply = '';
+
+    return 1 if $verify;
+
+    my $prompt = "Create account '%s' (uid %d)? ";
+
+    while ( 1 ) {
+        printf $prompt, $uniqname, $uid;
+        $reply = "" if ! defined( $reply = <STDIN> );
+        chomp $reply;
+        return 1 if $reply =~ /^(y|ye|yes)$/i;
+        return 0 if $reply =~ /^(n|no)$/i;
+        printf "Sorry, I don't understand '$reply'. Try 'yes' or 'no'.\n";
+    }
+}
+
+
+# Look to see if this uniqname or user id is already in use on
+# this host. If a proper account already exists, return 0. If
+# both are available for use, return 1. For everything else,
+# return 2.
+
+sub check_user( $ $ ) {
+    my ( $uniqname, $uid ) = @_;
+    my $name = SubSub();
+    printf "${name} checking for '%s', uid '%d' in /etc/passwd.\n",
+        $uniqname, $uid if $dbg{checkpwent};
+    my $pwuid = getpwnam( $uniqname );
+    my $pwlogin = getpwuid( $uid );
+
+    # If the user login and uid exist and are same as our request,
+    # then the account already exists and we skip it. If not the
+    # same, then there's a mismatch.
+
+    if ( defined $pwlogin and defined $pwuid ) {
+        if ( $pwlogin =~ $uniqname and $pwuid == $uid ) {
+            print "User '$uniqname' already has account with uid $uid, skipped.\n" unless $acctwarn;
+            return 0;
+        }
+        printf STDERR "Error: login $uniqname already exists but with uid $pwuid rather than the\n";
+        printf STDERR "requested uid $uid.\n";
+        return 2;
+    }
+
+    # See if one exists but not the other. Give appropriate message.
+
+    if ( defined $pwlogin ) {
+        printf STDERR "Error: login $uniqname was requested with uid $uid, but uid is already\n";
+        printf STDERR "in use with login $pwlogin.\n";
+        return 2;
+    }
+
+    if ( defined $pwuid ) {
+        printf STDERR "Error: login $uniqname was requested with uid $uid, but login is already\n";
+        printf STDERR "in use with uid $pwuid.\n";
+        return 2;
+    }
+
+    # Neither exists, we must be good!
+
+    printf STDOUT "No pre-existing account found for $uniqname/$uid. OK to create.\n" if $verbose;
+    return 1;
+}
+
+# Uncomment this block to test check_user
+#$dbg{getpwent} = 1;
+#if ( $dbg{getpwent} ) {
+#    printf STDERR "check_user returned %d\n", check_user( "phred", 101010 );
+#    printf STDERR "check_user returned %d\n", check_user( "adbisaro", 30850 );
+#    printf STDERR "check_user returned %d\n", check_user( "scs", 40914 );
+#    printf STDERR "check_user returned %d\n", check_user( "scs", 30850 );
+#    printf STDERR "check_user returned %d\n", check_user( "phred", 40914 );
+#    exit 0;
+#}
+
+
+# create_user - we have what we need, try to create the user
+
+sub create_user( $ $ $ ) {
+    my ( $uniqname, $uid, $fullname ) = @_;
+    my $name = SubSub();
+    my ( $safename, $res );
+    printf STDERR "${name} request for '%s', login '%s', uid '%d'.\n",
+        $fullname, $uniqname, $uid if $dbg{create};
+    $res = check_user( $uniqname, $uid );
+
+    if ( 0 == $res ) {
+        $result_stats{already_have}++;
+        return 0;
+    } elsif ( 1 == $res ) {
+        $result_stats{creatable}++;
+        print "Will attempt to create account for $uniqname\n" if $verbose;
+    } elsif ( 2 == $res ) {
+        $result_stats{badrequest}++;
+        printf STDERR "${name}: Checking got value '%d'\n", $res if $dbg{create};
+        printf STDERR "${TOOL}: No account created for '$uniqname' ($fullname).\n";
+        return 0;
+    } else {
+        printf STDERR "Internal error - ${name} got $res from checkuser. Proceeding.\n";
+        return 0;
+    }
+
+    # Escape funky characters from the users name
+
+    $safename = $fullname;
+    $safename =~ s/(['" \t\\])/\\$1/g;
+
+    # Use the useradd command to create the accounts. Caution - These
+    # may be Linux-specific switches.
+
+    my $cmd = "/usr/sbin/useradd -c $safename -m -N -s /bin/bash -u $uid $uniqname";
+
+    if ( $dryrun ) {
+        printf STDERR "Would do: '$cmd'\n";
+        $result_stats{created}++;
+    } else {
+        if ( ! prompt_for_creation( $uniqname, $uid, $safename ) ) {
+            $result_stats{skipped}++;
+            return 0;
+        }
+        print "Doing '$cmd'\n" if $verbose;
+        if ( 0 == system "$cmd" ) {
+            $result_stats{created}++;
+            print "Account created for $uniqname ($fullname).\n";
+        } else {
+            $result_stats{failed}++;
+            printf STDERR "See message above, account creation failed for $uniqname:\n";
+            printf STDERR "   $cmd\n";
+        }
+    }
+    return 0;
+}
+
+# Uncomment this block to test for odd characters in names for create_user.
+
+#$dbg{create}=1;
+#foreach my $u ( "a space", "has two spaces", "has\ttab", "has\\backslash",
+#    'has"doublequote', "has'singlequote", 'Roland "Bob" San\'tangelo' ) {
+#    create_user "fakeunq", 7070701, $u;
+#}
+#exit;
+
+
+# Given a search string, find the ldap group and grab out all the
+# individuals in it.
+
+my %groups_seen = ();
+
+sub find_ldap_group( $ ) {
+    my ( $groupname ) = @_;
+    my $name = SubSub();
+    my $gname = lc $groupname;
+    my $gdata;
+    my %members = ();
+
+    # If we've already processed this name, just return
+
+    return if exists $groups_seen{$gname};
+
+    # We've not tried this name yet, look it up
+
+    $groups_seen{$gname}++;
+    $gdata = $ldap->search( filter => "(&(cn=$groupname))") or
+        die "ldap failed searching for '$groupname' in Mcommunity";
+
+    print STDERR Data::Dumper->Dump( [\$gdata], ['*gdata'] ) if $dbg{ldgrp};
+
+    # Loop through all the ldap data looking for member definitions.
+    # Don't worry about recursively tracing groups of groups, ldap
+    # itself expands them into members of the group queried. Er,
+    # well, that's what happened in my experiments.  --scs
+
+    my $entries_seen = 0;
+    foreach my $entry ($gdata->entries) {
+        my $t = asn $entry;
+        foreach my $href ( @{${$t}{attributes}} ) {
+            next if ! exists $$href{type};      # Should this ever happen?
+            if ( $$href{type} =~ /umichPrivate/i ) {
+                if ( $$href{vals}[0] =~ /true/i ) {
+                    print STDERR "THIS IS WRONG: $groupname is a private group. Ignoring.\n";
+                    return;
+                }
+            }
+            next if ( ( "member" ne $$href{type} ) &&
+                      ( "umichDirectMember" ne $$href{type} ) );
+            # This hash should have two members
+            #    type => "type of the value"
+            #    vals => "the data"
+            if ( "member" eq $$href{type} ) {
+                $entries_seen = 1;
+                print STDERR "Found members!\n" if $dbg{ldgrp};
+                foreach my $m ( @{$$href{vals}} ) {
+                    $members{$m}++;
+                }
+            } elsif ( "umichDirectMember" eq $$href{type} ) {
+                print STDERR "Found umichDirectMember!\n" if $dbg{ldgrp};
+                $entries_seen = 1;
+                foreach my $m ( @{$$href{vals}} ) {
+                    $members{$m}++;
+                }
+            }
+        }
+        if ( 0 == scalar keys %members ) {
+            print STDERR "Warning: group $groupname has no members.\n";
+        } elsif ( $dbg{ldgrp} ) {
+            print STDERR "The unique members entries are:\n" if $dbg{ldgrp};
+            foreach my $m ( sort keys %members ) {
+                printf STDERR "  User: '%s' (%d refs)\n", $m, $members{$m};
+            }
+        }
+    }
+
+    # Examine all the members that are part of the group. If they
+    # are users, add them to the list of users to provision. If
+    # they are not users, complain.
+
+    my $members_seen = 0;
+    foreach my $member ( keys %members ) {
+        printf STDERR "Checking member $member for type.\n" if $dbg{chkmember};
+        if ( $member =~ /(^|.+,)ou\=People,.*/ ) {
+            printf STDERR "Found person $member in $groupname.\n" if $dbg{chkmember};
+            if ( $member =~ /(^|.+,)uid\=([^,]+),.*/ ) {
+                $unique_users{$2}++;
+                $members_seen++;
+                print STDERR "Got match uniqname '$2' from '$member'\n" if $dbg{chkmember};
+            } else {
+                print STDERR "Failed getting uniqname from '$member'\n" if $dbg{chkmember};
+            }
+        } else {
+            printf "Non-user/nongroup member '$member' in $groupname.\n" if $dbg{chkmember};
+        }
+    }
+    if ( 0 == $members_seen ) {
+        print STDERR "No members found in group '$groupname'\n";
+    }
+}
+
+
+# Given a list of users, look each of them up and assemble the data we
+# need to create them. Once we have it, massage it into useful form.
+
+sub find_users ( @ ) {
+    my @user_list = @_;
+    my $name = SubSub();
+
+    for my $user ( @user_list ) {
+        $result_stats{users}++;
+        printf STDERR "${name}: search for $user\n" if $dbg{ldusr};
+        my $umsg = $ldap->search( # perform a search
+                            filter => "(&(uid=$user))"
+                          );
+        print STDERR Data::Dumper->Dump( [\$umsg], ['*umsg'] ) if $dbg{ldusr};
+
+        foreach my $entry ($umsg->entries) {
+            my $t = asn $entry;
+            my %this_user = ();
+            foreach my $href ( @{${$t}{attributes}} ) {
+                next if ! exists $$href{type};
+                my $type = $$href{type};
+                if ( "uidNumber" eq "$type" ) {         # UID number
+                    $this_user{uid} = $$href{vals}[0];
+                } elsif ( "displayName" eq "$type" ) {  # Best for gecos
+                    $this_user{bestname} = $$href{vals}[0];
+                } elsif ( "givenName" eq "$type" ) {    # Maybe for gecos
+                    $this_user{firstname} = $$href{vals}[0];
+                } elsif ( "sn" eq "$type" ) {   # Maybe for gecos - lastname
+                    $this_user{lastname} = $$href{vals}[0];
+                } elsif ( "uid" eq "$type" ) {          # Uniqname
+                    $this_user{uniqname} = $$href{vals}[0];
+                } elsif ( "cn" eq "$type" ) {           # Last gasp for gecos
+                    $this_user{cnlist} = $$href{vals};
+                }
+                # Anything other than these we just ignore
+            }
+            print STDERR Data::Dumper->Dump( [\%this_user], ['*this_user'] ) if $dbg{ldusr};
+            if ( exists $this_user{uniqname} ) {
+                $users{$this_user{uniqname}} = \%this_user;
+            } else {
+                printf STDERR "${TOOL}: Warning, user without uniqname found. Skipping.\n";
+            }
+        }
+    }
+
+    # We have all the data we're going to get. Create the user
+    # accounts. We have the user uniqnames and uid numbers from
+    # the work above, we just need to compose an appropriate
+    # fullname and issue the useradd commands.
+
+    my ( $uniqname, $user_idnum, $gecos );
+
+    foreach my $key ( sort keys %users ) {
+        printf "Got user '$key'\n" if $dbg{usrdata};
+        if ( ! exists $users{$key}{uniqname} ) {
+            # Can't happen, internal error.
+            print STDERR "${TOOL}: Internal error - user without uniqname:\n";
+            print STDERR Data::Dumper->Dump( [\$users{$key}], ['*users{$key}'] );
+        } else {
+
+            # Run thru the data for this user, verifying we have what we
+            # need to actually create an account. First, just use the
+            # uniqname as is.
+
+            $uniqname = $users{$key}{uniqname};
+
+            # Select the users full name in order of declining
+            # desireability.
+
+            print "Debugging gcos\n" if $dbg{gecos};
+
+            if ( exists $users{$key}{bestname} ) {
+                $gecos = $users{$key}{bestname};
+                print STDERR "Gecos from bestname.\n" if $dbg{gecos};
+            } elsif ( exists $users{$key}{lastname} and exists $users{$key}{firstname} ) {
+                $gecos = $users{$key}{firstname}." ".$users{$key}{lastname};
+                print STDERR "Gecos from first/last.\n" if $dbg{gecos};
+            } elsif ( exists $users{$key}{cnlist} ) {
+                $gecos = $users{$key}{cnlist}[0];
+                print STDERR "Gecos from cnlist[0].\n" if $dbg{gecos};
+            } else {
+                # Give up, use uniqname
+                $gecos = $users{$key}{uniqname};
+                print STDERR "Warning, used uniqname for $gecos fullname.\n";
+            }
+            print STDERR "Created gecos is '$gecos'\n" if $dbg{gecos};
+
+            # If there was not a UID number, sound a warning and choose
+            # one. See comments for mkuid4uniqname for some critical
+            # data about how we select the UID number.
+
+            $user_idnum = exists $users{$key}{uid}
+                ? $users{$key}{uid}
+                : mkuid4uniqname $uniqname;
+
+            # We have all the data we need. Validate and create the account
+
+            create_user $uniqname, $user_idnum, $gecos;
+        }
+    }
+}
+
+
+# ------------------------------------------------------------------------
+# MAIN - everything is set, lets do real work.
+# ------------------------------------------------------------------------
+
+# If we're not root, we'll still run (good for testing) but will
+# turn on $dryrun.
+
+my $whoami = getpwuid($>);
+
+if ( $whoami !~ /^root$/ ) {
+    if ( ! $dryrun ) {
+        $dryrun = 1;
+        printf STDERR "$TOOL should be run as root. You are not, so we are running in\n";
+        printf STDERR "test mode. To silence this message, either use -t or run as root.\n";
+    }
+}
+
+# Make an anonymous connection to the ldap server and
+# hold onto it - we'll be doing multiple searches.
+
+$ldap = Net::LDAP->new( 'ldap.umich.edu' ) or die "$@";
+$gmesg = $ldap->bind ;    # an anonymous bind
+
+# These group names are good to test with.
+#   blackops  ctops  physics
+
+#@grouplist = qw( blackops ); # Need to get these from the command line.
+
+foreach my $group ( @grouplist ) {
+    printf STDERR "Searching for group '%s'\n", $group if $dbg{ldgrp};
+    find_ldap_group( $group );
+}
+
+# Now look up the individuals and create their accounts.
+
+find_users keys %unique_users;
+
+# Be kind, clean up
+
+$ldap->unbind();
+
+# Report on the result
+
+if ( $verbose or $dryrun or !$verify ) {
+    my $stats_fmt = "  %4d %s\n";
+    printf "%d total users found in %d real group(s):\n",
+        $result_stats{users}, scalar keys %groups_seen;
+    printf $stats_fmt, $result_stats{already_have}, "already had accounts";
+    printf $stats_fmt, $result_stats{badrequest}, "could not be attempted";
+    if ( $dryrun ) {
+        printf $stats_fmt, $result_stats{created}, "creations would have been tried";
+    } else {
+        printf $stats_fmt, $result_stats{created}, "had accounts created";
+    }
+    if ( ! $verify ) {
+        printf $stats_fmt, $result_stats{skipped}, "account creations skipped by you";
+    }
+    printf $stats_fmt, $result_stats{failed}, "account creations failed";
+}
+
+# Return a value indicating overall success
+
+exit 0 == ( $result_stats{badrequest} + $result_stats{failed} ) ? 0 : 1;
+
+=pod
+
+=head1 NAME
+
+B<ldgrp2accts> - provision local accounts by Mcommunity (ldap) group
+
+=head1 SYNOPSIS
+
+B<ldgrp2accts> [ -w -t -n -u -h -v ] [ -f filename ] [ groupname ... ]
+
+=head1 DESCRIPTION
+
+B<ldgrp2accts>I<(8)> provisions local accounts on an ITS-supported
+RedHat Linux system. It expects one or more group names as
+defined in MCommunity. The group is looked up in MCommunity
+via the public read-only LDAP interface. Accounts will be
+provisioned for any member of the group(s) who does not have
+an account on the local system.
+
+Provisioning is done by using the 
+local Linux command B<useradd>I<(8)> to do the actual work. Use the
+C<-t> switch to see the details of how B<useradd>I<(8)> would be
+invoked.
+
+B<ldgrp2accts>I<(8)> does not set initial passwords.
+
+When B<ldgrp2accts>I<(8)> invokes B<useradd>I<(8)> it forces use of a
+persons I<uniqname>, I<uid>, and I<fullname> as defined in MCommunity
+for use as the UNIX login name, UID, and fullname (GECOS). The shell
+is always set to C<bash>. Other default data such as location of home
+directories is taken from the defaults as configured for B<useradd>I<(8)>
+on the given host. See the section B<WORKAROUNDS> below for ways to
+override such things.
+
+=head2 SWITCHES
+
+Most switches are available in both short and long form. For those which
+allow only one, only the available form is shown.
+
+All switches are optional. At least one MCommunity group name must be
+given via C<-f I<filename>>, or on the command line, or both.
+
+=over 2
+
+=item C<-w> or C<--warning>
+
+Suppress warnings about accounts that already exist.
+
+=item C<-t> or C<--test>
+
+Don't actually provision the accounts, just say what you would have done.
+
+=item C<-n> or C<--noverify>
+
+Supress verification prompts before creating an account (default: no verify).
+
+=item C<-f I<filename>> or C<--file I<filename>>
+
+Read group names from C<I<filename>> as well as using any group names
+which appear on the command line.
+The file must exist and be readable.
+Any line beginning with a C<#> is treated as a comment.
+There can be only one group name per line.
+
+=item C<-u> or C<--usage>
+
+Print a usage message describing the switches and exit.
+
+=item C<-h> or C<--help>
+
+Print a help message and exit. This will eventually be replaced by a
+method that prints this manual page.
+
+=item C<--version>
+
+Print version number of B<ldgrp2accts>I<(8)> and exit.
+
+=item C<-v> or C<--verbose>
+
+Be verbose (default: no).
+
+=back
+
+=head2 SUGGESTED WORKAROUNDS
+
+B<ldgrp2accts>I<(8)> can be run in test mode with the C<-t> switch. This
+will cause it to tell you the exact commands it would emit to provision
+the various accounts, but will not actually provision them. Any parameter
+that B<ldgrp2accts>I<(8)> does not explicitly set is determined by the
+defaults configured for B<useradd>I<(8)>.  The command C<useradd -D>
+will show you those defaults on the local system.
+
+If a change to the defaults is desired for all users on a given
+host, consider changing the local defaults with C<useradd -D
+I<new>...>, modifying the C</etc/login.defs> file, or modifying
+the C<skel> files appropriately. See the manual page for B<useradd>I<(8)>
+for details on this.
+
+If a change is needed for only a few users, there are two useful
+strategies. One is to use the C<-t>) switch to see the B<useradd>I<(8)>
+commands that would be generated, then issue them yourself with
+appropriate modifications.  The other is to let B<ldgrp2accts>I<(8)>
+go ahead and create the accounts, then modify them afterwards with
+commands like B<chsh>I<(8)>, B<chfn>I<(8)>, B<vipw>I<(8)> and B<vigr>I<(8)>.
+
+=head1 LIMITATIONS
+
+B<ldgrp2accts>I<(8)> does not deprovision accounts.
+This was not in the original design, and doing so automatically
+is a deeply difficult process.
+Further discussion is out of scope for this manual page.
+
+B<ldgrp2accts>I<(8)> does not create or update UNIX login groups
+as defined in the C</etc/groups> file. You will want to use
+B<vigr>I<(8)> and B<vipw>I<(8)> for that purpose.
+
+=head1 VERSION
+
+This manual page was generated by B<pod2html> from the source to
+B<ldgrp2accts> $Revision: 1.12 $
+
+=head1 FILES
+
+None, but see the manual pages for the commands mentioned in B<SEE
+ALSO> below.
+
+=head1 BUGS
+
+None known, but see B<LIMITATIONS> above.
+
+=head1 AUTHORS
+
+Steve Simmons (scs@umich.edu)
+
+=head1 COPYRIGHT STATUS
+
+Copyright 2012, Regents of the University of Michigan.
+
+=head1 SEE ALSO
+
+B<useradd>I<(8)>, B<vipw>I<(8)>, B<vigr>I<(8)>, B<chfn>I<(1)>,
+B<chsh>I<(1)>, and anything in the B<SEE ALSO> sections of those
+commands' manual pages.

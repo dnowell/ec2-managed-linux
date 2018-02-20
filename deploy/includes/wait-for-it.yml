@@ -1,0 +1,21 @@
+---
+- name: Poll (ensure the EC2 instance SSH daemon started)
+  wait_for:
+    host: "{{ item }}"
+    port: 22
+    delay: 10
+    connect_timeout: 5
+    sleep: 10
+    timeout: 1200
+    state: started
+  with_items: "{{ f_ip_addr }}"
+
+  # This next task is needed because a brand new CentOS 7
+  # instance first starts the OpenSSH daemon, and then creates
+  # the 'centos' shell account (in that order). This causes
+  # an occasional race condition where SSH is open but the 'centos'
+  # account doesn't exist quite yet (and the Ansible deploy roles
+  # fail to connect).
+- name: Sleep (wait for cloud-init to create default account)
+  pause:
+    seconds: 45

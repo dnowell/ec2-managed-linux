@@ -1,0 +1,12 @@
+---
+- name: restart ntp
+  service: name=ntpd state=restarted
+
+- name: restart rsyslog
+  service: name=rsyslog state=restarted
+
+- name: restart iptables
+  service: name=iptables state=restarted
+
+- name: restart sysctl
+  service: name=systemd-sysctl state=restarted

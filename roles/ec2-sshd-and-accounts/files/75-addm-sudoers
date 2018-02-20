@@ -1,0 +1,12 @@
+Cmnd_Alias LSOF_PATHS= \
+        /usr/local/bin/lsof, \
+        /usr/sbin/lsof
+
+Cmnd_Alias ADDM_FDTD_CMDS= \
+        LSOF_PATHS, \
+        /usr/sbin/dmidecode, \
+        /usr/bin/systool, \
+        /usr/bin/docker ps
+
+1bmcfdtd ALL=NOPASSWD: ADDM_FDTD_CMDS
+

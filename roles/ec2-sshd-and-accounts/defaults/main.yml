@@ -1,0 +1,8 @@
+---
+# Some basic user stuff that would go on every managed server with user accounts
+homedir_base: "/home"
+
+admin_group: "systems-support"
+admin_gid: 6600
+
+admin_mcomm_group: "its systems support unix"

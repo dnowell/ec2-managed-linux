@@ -1,0 +1,18 @@
+************************************************************************
+* Tivoli Storage Manager                                               *
+************************************************************************
+
+SErvername  Normal
+   COMMMethod         TCPip
+   TCPPort            {{ tsm_port }} 
+   TCPServeraddress   {{ tsm_server }}
+   NODENAME           {{ ansible_hostname }}
+   Passwordaccess     generate
+   Managedservices    schedule
+   changingretries    1
+   compression        no
+   schedlogn          /var/log/dsmsched.log
+   errorlogn          /var/log/dsmerror.log
+   schedlogr          4 D
+   inclexcl           /usr/local/etc/tsm_incl_excl.system
+   

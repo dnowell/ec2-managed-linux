@@ -1,0 +1,12 @@
+# Managed by Ansible
+[duo]
+; Duo integration key
+ikey = {{ duo_ikey }}
+; Duo secret key
+skey = {{ duo_skey }}
+; Duo API host
+host = {{ duo_apihost}}
+; Send command for Duo Push authentication
+;pushinfo = yes
+failmode = secure
+groups = *,!not2fa

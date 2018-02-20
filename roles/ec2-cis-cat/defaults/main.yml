@@ -1,0 +1,4 @@
+---
+# Override these in your group_vars or host_vars
+
+aws_s3_downloads: "https://s3.us-east-2.amazonaws.com/umich-iq-static"

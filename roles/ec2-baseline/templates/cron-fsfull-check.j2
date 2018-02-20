@@ -1,0 +1,108 @@
+#!/bin/bash
+
+# Managed by Ansible
+
+# ------------------------------------------------------------------------- #
+#                       VARIABLE DEFINITIONS
+# ------------------------------------------------------------------------- #
+
+PATH=/bin:/usr/bin
+
+# Jinja2-generated values
+
+readonly _upper_limit={{ fs_full_alert_pct }}
+readonly _slack_channel={{ slack_channel  }}
+readonly _slack_username={{ slack_username }}
+readonly _slack_uri={{ slack_uri }}
+
+# A suffixed (%H) alert lockfile ensures that we are alerted
+# about a full filesystem - at most - once each hour.
+
+readonly _alert_lockfile="/tmp/fs-full-check.$(whoami).$(date +%H)"
+readonly _fsoutput_file="/tmp/fs-full-check.$(whoami).output"
+readonly _tmpfiles=/tmp/fs-full-check.*
+
+# ------------------------------------------------------------------------- #
+#                       FUNCTIONS
+# ------------------------------------------------------------------------- #
+
+errout() {
+        local _msg="${0##*/} error: ${1}"
+
+        printf '%s\n' "${_msg}"
+        logger -p local3.err "${_msg}"
+
+        exit 1
+}
+
+audit_installed_programs() {
+        local _i
+
+        for _i in gawk curl ; do
+                which "${_i}" >/dev/null 2>&1
+
+                if [ ${?} -ne 0 ] ; then
+                        errout "Missing program dependency (${_i})"
+                fi
+        done
+}
+
+examine_filesystem_space() {
+        local _mountpoint
+        local _percent_full
+
+        while IFS='' read -r _line || [ -n "${_line}" ] ; do
+                _percent_full="$(gawk '{print $6}' <<<${_line})"
+                _mountpoint="$(gawk '{print $7}' <<<${_line})"
+
+                if [ ${_percent_full%\%} -gt ${_upper_limit} ] ; then
+                        send_alert "${_mountpoint}" "${_percent_full}"
+                        touch "${_alert_lockfile}"
+                fi
+
+        done < "${_fsoutput_file}"
+}
+
+send_alert() {
+        local _msg="${HOSTNAME%%.*} ${0##*/}: filesystem (${1}) is ${2} full!"
+        local _json="{\"channel\": \"${_slack_channel}\", \"username\":\"${_slack_username}\", \"attachments\":[{\"color\":\"danger\" , \"text\": \"${_msg}\"}]}"
+
+        curl -s -d "payload=${_json}" "${_slack_uri}"
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem posting message to Slack'
+        fi
+}
+
+# ------------------------------------------------------------------------- #
+#                       MAIN LOGIC
+# ------------------------------------------------------------------------- #
+
+audit_installed_programs
+
+# If a lockfile (matching the current hour) exists, then we already
+# sent an alert. We can get out quietly.
+#
+# Else clean up the old alert files so that we start fresh when the
+# new hour/day begins.
+
+if [ -e "${_alert_lockfile}" ] ; then
+        exit 0
+else
+        # Do not quote $_tmpfiles or it will break the glob
+        rm -f ${_tmpfiles}
+fi
+
+# Capture current filesystem space and inode usage.
+
+cp /dev/null "${_fsoutput_file}"
+
+for _i in '-T -P' '-T -P -i' ; do
+        df ${_i}                                                        |
+        grep -E '\<(xfs|ext[2-4])\>'                                    \
+        >> "${_fsoutput_file}"
+done
+
+examine_filesystem_space
+
+exit 0

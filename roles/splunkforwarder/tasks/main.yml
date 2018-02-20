@@ -1,0 +1,43 @@
+---
+# tasks file for roles/splunkforwarder
+
+###########################################################################
+- block:
+############################################################################
+ 
+  - name: Get splunkforwarder .rpm from Systems S3 bucket
+    get_url:
+      url: http://umich-systems-support.s3.amazonaws.com/splunkforwarder-6.6.1-aeae3fe0c5af-linux-2.6-x86_64.rpm
+      dest: /tmp/splunkforwarder-6.6.1-aeae3fe0c5af-linux-2.6-x86_64.rpm
+
+  - name: Install splunkforwarder .rpm package
+    yum:
+      name: /tmp/splunkforwarder-6.6.1-aeae3fe0c5af-linux-2.6-x86_64.rpm
+      state: present
+
+  - name: Initialize splunkforwarder / Accept EULA
+    command: '/opt/splunkforwarder/bin/splunk start --accept-license --answer-yes --no-prompt'
+    become: true
+    become_user: splunk
+
+  - name: Configure splunkforwarder init script 
+    command: /opt/splunkforwarder/bin/splunk enable boot-start -user splunk
+
+  - name: Configure splunkforwarder deployment client
+    command: '/opt/splunkforwarder/bin/splunk set deploy-poll spinifexbird.dsc.umich.edu:8089 -auth admin:changeme'
+    become: true
+    become_user: splunk
+
+  - service:
+      name: splunk
+      enabled: yes
+      state: restarted
+
+  when: IP_TYPE == "vpn"
+
+- block:
+
+  - name: Add Splunk user to logviewer group on syslog server
+    command: usermod -G logviewers splunk
+
+  when: f_is_loghost == "yes"
